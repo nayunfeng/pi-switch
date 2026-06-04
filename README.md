@@ -1,20 +1,52 @@
 # Pi Switch
 
-Pi Switch is a planned desktop configuration console for Pi Coding Agent.
+Pi Switch is a Tauri + React + TypeScript desktop configuration console for Pi Coding Agent.
 
-The first version focuses on managing Profiles for official providers and custom relay providers, then applying one active Profile to Pi global configuration.
+The MVP manages Profiles for official providers and custom relay providers, then applies one active Profile to Pi global configuration.
 
-Current status:
+## Features
 
-- Product requirements are documented in `docs/specs/pi-switch-prd.md`.
-- Technical design is documented in `docs/specs/technical-design.md`.
-- UI flow and wireframes are documented in `docs/specs/ui-flow.md` and `docs/specs/wireframes.md`.
-- A throwaway clickable UI prototype is available in `prototypes/ui/index.html`.
+- Profile create, duplicate, delete and edit.
+- Official providers: OpenAI, Anthropic, Google Gemini, OpenRouter, Groq, Mistral, xAI.
+- Custom providers with provider ID, display name, base URL, API type, API key and model list.
+- Save GUI config to `~\PiSwitch\config.json`.
+- Apply the active Profile to:
+  - `~\.pi\agent\models.json`
+  - `~\.pi\agent\auth.json`
+  - `~\.pi\agent\settings.json`
+- Preserve OAuth and unknown entries in `auth.json`.
+- Preserve unrelated fields in `settings.json`; only update `defaultProvider` and `defaultModel`.
+- Fetch OpenAI-compatible `/models` candidates for custom providers.
+- Run `pi -p "ping"` with a 15 second timeout.
+- Chinese / English UI and system / light / dark theme.
 
-Prototype:
+## Development
 
-```text
-Open prototypes/ui/index.html in a browser.
+```powershell
+npm install
+npm run tauri dev
 ```
 
-No production Tauri app has been scaffolded yet.
+## Validation
+
+```powershell
+npm run build
+cd src-tauri
+cargo test
+cd ..
+npm run tauri build
+```
+
+Release bundles are generated under:
+
+```text
+src-tauri\target\release\bundle\
+```
+
+## Specs
+
+- Product requirements: `docs/specs/pi-switch-prd.md`
+- Technical design: `docs/specs/technical-design.md`
+- UI flow: `docs/specs/ui-flow.md`
+- Wireframes: `docs/specs/wireframes.md`
+- Original static prototype: `prototypes/ui/index.html`
