@@ -1,0 +1,166 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Pi Switch Prototype</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <main class="app-shell">
+      <header class="topbar">
+        <div>
+          <h1>Pi Switch</h1>
+          <p>Prototype only. No files are written.</p>
+        </div>
+        <div class="top-actions">
+          <select id="languageSelect" aria-label="Language">
+            <option value="zh-CN">中文</option>
+            <option value="en-US">English</option>
+          </select>
+          <select id="themeSelect" aria-label="Theme">
+            <option value="system">System</option>
+            <option value="light">Light</option>
+            <option value="dark">Dark</option>
+          </select>
+        </div>
+      </header>
+
+      <section class="workspace">
+        <aside class="sidebar" aria-label="Profiles">
+          <div class="sidebar-head">
+            <h2>Profiles</h2>
+            <button id="newProfileBtn" class="icon-button" type="button" title="New Profile">+</button>
+          </div>
+          <div class="sidebar-actions">
+            <button id="duplicateProfileBtn" type="button">Duplicate</button>
+            <button id="deleteProfileBtn" class="danger-outline" type="button">Delete</button>
+          </div>
+          <div id="profileList" class="profile-list"></div>
+        </aside>
+
+        <section class="editor" aria-label="Profile editor">
+          <div id="emptyState" class="empty-state" hidden>
+            <h2>暂无 Profile</h2>
+          </div>
+
+          <form id="profileForm" class="profile-form">
+            <div class="section-title">
+              <h2>Profile</h2>
+              <span id="profileKindBadge" class="badge"></span>
+            </div>
+
+            <label>
+              <span>Name</span>
+              <input id="profileName" type="text" />
+              <small id="nameError" class="field-error"></small>
+            </label>
+
+            <fieldset class="segmented" aria-label="Profile type">
+              <label><input type="radio" name="profileKind" value="official" /> Official provider</label>
+              <label><input type="radio" name="profileKind" value="custom" /> Custom provider</label>
+            </fieldset>
+
+            <section id="officialFields" class="field-group">
+              <label>
+                <span>Provider</span>
+                <select id="officialProvider"></select>
+              </label>
+            </section>
+
+            <section id="customFields" class="field-group">
+              <label>
+                <span>Provider ID</span>
+                <input id="customProviderId" type="text" />
+                <small id="providerIdError" class="field-error"></small>
+              </label>
+              <label>
+                <span>Display name</span>
+                <input id="customProviderName" type="text" />
+              </label>
+              <label>
+                <span>Base URL</span>
+                <input id="customBaseUrl" type="text" />
+                <small id="baseUrlError" class="field-error"></small>
+              </label>
+              <label>
+                <span>API type</span>
+                <input id="customApiType" list="apiTypes" type="text" />
+              </label>
+              <datalist id="apiTypes">
+                <option value="openai-completions"></option>
+                <option value="openai-responses"></option>
+                <option value="anthropic-messages"></option>
+                <option value="google-generative-ai"></option>
+              </datalist>
+            </section>
+
+            <label>
+              <span>API Key</span>
+              <div class="key-row">
+                <input id="apiKey" type="password" />
+                <button id="toggleKeyBtn" class="icon-button" type="button" title="Show API Key">Show</button>
+              </div>
+              <small id="apiKeyError" class="field-error"></small>
+            </label>
+
+            <section class="models-section">
+              <div class="section-title">
+                <h3>Models</h3>
+                <button id="fetchModelsBtn" type="button">Fetch models</button>
+              </div>
+              <div id="modelList" class="model-list"></div>
+              <div class="add-model">
+                <input id="newModelId" type="text" placeholder="Model ID" />
+                <button id="addModelBtn" type="button">Add</button>
+              </div>
+              <small id="modelsError" class="field-error"></small>
+            </section>
+
+            <div class="form-actions">
+              <button id="saveProfileBtn" type="button">Save Profile</button>
+              <button id="applyProfileBtn" type="button">Apply to Pi</button>
+              <button id="testProfileBtn" type="button">Test</button>
+            </div>
+          </form>
+        </section>
+      </section>
+
+      <section class="output-panel" aria-label="Test output">
+        <div class="section-title">
+          <h2>Test Output</h2>
+          <span id="testStatus" class="badge">idle</span>
+        </div>
+        <pre id="testOutput">No test run yet.</pre>
+      </section>
+    </main>
+
+    <dialog id="fetchDialog" class="dialog">
+      <form method="dialog">
+        <div class="section-title">
+          <h2>Fetched models</h2>
+          <button value="close" class="icon-button" title="Close">x</button>
+        </div>
+        <input id="modelSearch" type="search" placeholder="Search models..." />
+        <div id="fetchedModels" class="fetched-models"></div>
+        <div class="dialog-actions">
+          <button id="addFetchedBtn" type="button">Add selected</button>
+          <button value="close">Close</button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog id="deleteDialog" class="dialog">
+      <form method="dialog">
+        <h2>Delete Profile</h2>
+        <p id="deleteMessage"></p>
+        <div class="dialog-actions">
+          <button value="cancel">Cancel</button>
+          <button id="confirmDeleteBtn" class="danger" type="button">Delete</button>
+        </div>
+      </form>
+    </dialog>
+
+    <script src="./prototype.js"></script>
+  </body>
+</html>
