@@ -1,52 +1,191 @@
 export type Language = "zh-CN" | "en-US";
 export type ThemeMode = "system" | "light" | "dark";
-export type ProfileKind = "official" | "custom";
+export type ProviderKind = "official" | "custom";
+export type AuthMode = "existing" | "apiKey";
 
 export type OfficialProviderId =
-  | "openai"
+  | "amazon-bedrock"
+  | "ant-ling"
   | "anthropic"
   | "google"
-  | "openrouter"
+  | "google-vertex"
+  | "openai"
+  | "azure-openai-responses"
+  | "openai-codex"
+  | "nvidia"
+  | "deepseek"
+  | "github-copilot"
+  | "xai"
   | "groq"
+  | "cerebras"
+  | "openrouter"
+  | "vercel-ai-gateway"
+  | "zai"
+  | "zai-coding-cn"
   | "mistral"
-  | "xai";
+  | "minimax"
+  | "minimax-cn"
+  | "moonshotai"
+  | "moonshotai-cn"
+  | "huggingface"
+  | "fireworks"
+  | "together"
+  | "opencode"
+  | "opencode-go"
+  | "kimi-coding"
+  | "cloudflare-workers-ai"
+  | "cloudflare-ai-gateway"
+  | "xiaomi"
+  | "xiaomi-token-plan-cn"
+  | "xiaomi-token-plan-ams"
+  | "xiaomi-token-plan-sgp";
 
-export type ModelEntry = {
-  id: string;
-  name?: string;
+export type ApiType =
+  | "openai-completions"
+  | "mistral-conversations"
+  | "openai-responses"
+  | "azure-openai-responses"
+  | "openai-codex-responses"
+  | "anthropic-messages"
+  | "bedrock-converse-stream"
+  | "google-generative-ai"
+  | "google-vertex"
+  | (string & {});
+
+export type HeaderEntry = {
+  key: string;
+  value: string;
 };
 
-export type OfficialProfile = {
+export type CostConfig = {
+  input?: number;
+  output?: number;
+  cacheRead?: number;
+  cacheWrite?: number;
+};
+
+export type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
+export type ThinkingLevelMap = Partial<Record<ThinkingLevel, string | null>>;
+
+export type OpenRouterRouting = {
+  allow_fallbacks?: boolean;
+  require_parameters?: boolean;
+  data_collection?: "allow" | "deny" | "";
+  zdr?: boolean;
+  enforce_distillable_text?: boolean;
+  order?: string[];
+  only?: string[];
+  ignore?: string[];
+  quantizations?: string[];
+  sortBy?: string;
+  sortPartition?: string;
+  maxPricePrompt?: number;
+  maxPriceCompletion?: number;
+  maxPriceImage?: number;
+  maxPriceAudio?: number;
+  maxPriceRequest?: number;
+  minThroughputP50?: number;
+  minThroughputP75?: number;
+  minThroughputP90?: number;
+  minThroughputP99?: number;
+  maxLatencyP50?: number;
+  maxLatencyP75?: number;
+  maxLatencyP90?: number;
+  maxLatencyP99?: number;
+};
+
+export type VercelGatewayRouting = {
+  only?: string[];
+  order?: string[];
+};
+
+export type CompatConfig = {
+  supportsStore?: boolean;
+  supportsDeveloperRole?: boolean;
+  supportsReasoningEffort?: boolean;
+  supportsUsageInStreaming?: boolean;
+  maxTokensField?: "max_completion_tokens" | "max_tokens" | "";
+  requiresToolResultName?: boolean;
+  requiresAssistantAfterToolResult?: boolean;
+  requiresThinkingAsText?: boolean;
+  requiresReasoningContentOnAssistantMessages?: boolean;
+  thinkingFormat?: "openai" | "openrouter" | "deepseek" | "together" | "zai" | "qwen" | "qwen-chat-template" | "string-thinking" | "ant-ling" | "";
+  zaiToolStream?: boolean;
+  supportsStrictMode?: boolean;
+  cacheControlFormat?: "anthropic" | "";
+  sendSessionAffinityHeaders?: boolean;
+  supportsLongCacheRetention?: boolean;
+  sendSessionIdHeader?: boolean;
+  supportsEagerToolInputStreaming?: boolean;
+  supportsCacheControlOnTools?: boolean;
+  supportsTemperature?: boolean;
+  forceAdaptiveThinking?: boolean;
+  allowEmptySignature?: boolean;
+  openRouterRouting?: OpenRouterRouting;
+  vercelGatewayRouting?: VercelGatewayRouting;
+};
+
+export type ModelSource = "builtin" | "custom";
+
+export type ModelConfig = {
+  id: string;
+  name?: string;
+  source?: ModelSource;
+  overrideBuiltIn?: boolean;
+  api?: ApiType;
+  reasoning?: boolean;
+  input?: ("text" | "image")[];
+  contextWindow?: number;
+  maxTokens?: number;
+  cost?: CostConfig;
+  headers?: HeaderEntry[];
+  compat?: CompatConfig;
+  thinkingLevelMap?: ThinkingLevelMap;
+};
+
+export type ProviderAdvancedConfig = {
+  baseUrl?: string;
+  api?: ApiType;
+  apiKey?: string;
+  headers?: HeaderEntry[];
+  authHeader?: boolean;
+  compat?: CompatConfig;
+};
+
+export type OfficialProvider = {
   kind: "official";
   id: string;
   name: string;
   providerId: OfficialProviderId;
+  authMode: AuthMode;
   apiKey: string;
-  models: ModelEntry[];
+  advanced?: ProviderAdvancedConfig;
+  models: ModelConfig[];
   defaultModelId: string;
 };
 
-export type CustomProfile = {
+export type CustomProvider = {
   kind: "custom";
   id: string;
   name: string;
-  providerId: string;
-  providerName?: string;
   baseUrl: string;
-  api: string;
+  api: ApiType;
   apiKey: string;
-  models: ModelEntry[];
+  headers?: HeaderEntry[];
+  authHeader?: boolean;
+  compat?: CompatConfig;
+  models: ModelConfig[];
   defaultModelId: string;
 };
 
-export type Profile = OfficialProfile | CustomProfile;
+export type Provider = OfficialProvider | CustomProvider;
 
 export type AppConfig = {
-  schemaVersion: 1;
+  schemaVersion: 2;
   language?: Language;
   theme: ThemeMode;
-  activeProfileId?: string;
-  profiles: Profile[];
+  activeProviderId?: string;
+  providers: Provider[];
 };
 
 export type ResolvedPaths = {
@@ -64,128 +203,232 @@ export type AppError = {
   writtenFiles?: string[];
 };
 
-export type TestProfileResult = {
+export type TestProviderResult = {
   status: "success" | "failed" | "timeout";
   exitCode?: number;
   stdout: string;
   stderr: string;
 };
 
+export type PiModelInfo = {
+  provider: string;
+  id: string;
+  context: string;
+  maxOut: string;
+  thinking: boolean;
+  images: boolean;
+};
+
 export const OFFICIAL_PROVIDER_IDS: OfficialProviderId[] = [
-  "openai",
+  "amazon-bedrock",
+  "ant-ling",
   "anthropic",
   "google",
-  "openrouter",
-  "groq",
-  "mistral",
+  "google-vertex",
+  "openai",
+  "azure-openai-responses",
+  "openai-codex",
+  "nvidia",
+  "deepseek",
+  "github-copilot",
   "xai",
+  "groq",
+  "cerebras",
+  "openrouter",
+  "vercel-ai-gateway",
+  "zai",
+  "zai-coding-cn",
+  "mistral",
+  "minimax",
+  "minimax-cn",
+  "moonshotai",
+  "moonshotai-cn",
+  "huggingface",
+  "fireworks",
+  "together",
+  "opencode",
+  "opencode-go",
+  "kimi-coding",
+  "cloudflare-workers-ai",
+  "cloudflare-ai-gateway",
+  "xiaomi",
+  "xiaomi-token-plan-cn",
+  "xiaomi-token-plan-ams",
+  "xiaomi-token-plan-sgp",
 ];
 
 export const OFFICIAL_PROVIDER_LABELS: Record<OfficialProviderId, string> = {
-  openai: "OpenAI",
+  "amazon-bedrock": "Amazon Bedrock",
+  "ant-ling": "Ant Ling",
   anthropic: "Anthropic",
   google: "Google Gemini",
-  openrouter: "OpenRouter",
-  groq: "Groq",
-  mistral: "Mistral",
+  "google-vertex": "Google Vertex",
+  openai: "OpenAI",
+  "azure-openai-responses": "Azure OpenAI Responses",
+  "openai-codex": "OpenAI Codex",
+  nvidia: "NVIDIA NIM",
+  deepseek: "DeepSeek",
+  "github-copilot": "GitHub Copilot",
   xai: "xAI",
+  groq: "Groq",
+  cerebras: "Cerebras",
+  openrouter: "OpenRouter",
+  "vercel-ai-gateway": "Vercel AI Gateway",
+  zai: "ZAI",
+  "zai-coding-cn": "ZAI Coding China",
+  mistral: "Mistral",
+  minimax: "MiniMax",
+  "minimax-cn": "MiniMax China",
+  moonshotai: "Moonshot AI",
+  "moonshotai-cn": "Moonshot AI China",
+  huggingface: "Hugging Face",
+  fireworks: "Fireworks",
+  together: "Together AI",
+  opencode: "OpenCode Zen",
+  "opencode-go": "OpenCode Go",
+  "kimi-coding": "Kimi For Coding",
+  "cloudflare-workers-ai": "Cloudflare Workers AI",
+  "cloudflare-ai-gateway": "Cloudflare AI Gateway",
+  xiaomi: "Xiaomi MiMo",
+  "xiaomi-token-plan-cn": "Xiaomi MiMo Token Plan CN",
+  "xiaomi-token-plan-ams": "Xiaomi MiMo Token Plan AMS",
+  "xiaomi-token-plan-sgp": "Xiaomi MiMo Token Plan SGP",
 };
 
-export const API_PRESETS = [
+export const API_PRESETS: ApiType[] = [
   "openai-completions",
+  "mistral-conversations",
   "openai-responses",
+  "azure-openai-responses",
+  "openai-codex-responses",
   "anthropic-messages",
+  "bedrock-converse-stream",
   "google-generative-ai",
-] as const;
-
-export const OFFICIAL_MODEL_PRESETS: Record<OfficialProviderId, string[]> = {
-  openai: ["gpt-4o", "gpt-4o-mini"],
-  anthropic: ["claude-sonnet-4", "claude-3-5-haiku"],
-  google: ["gemini-2.5-pro", "gemini-2.5-flash"],
-  openrouter: [],
-  groq: [],
-  mistral: ["mistral-large-latest", "codestral-latest"],
-  xai: ["grok-4", "grok-code-fast"],
-};
+  "google-vertex",
+];
 
 export function defaultConfig(): AppConfig {
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     theme: "system",
-    profiles: [],
+    providers: [],
   };
 }
 
-export function createOfficialProfile(): OfficialProfile {
+export function createOfficialProvider(): OfficialProvider {
   return {
     kind: "official",
-    id: createProfileId(),
-    name: "OpenAI Daily",
+    id: createProviderEntryId(),
+    name: "OpenAI",
     providerId: "openai",
+    authMode: "existing",
     apiKey: "",
-    models: OFFICIAL_MODEL_PRESETS.openai.map((id) => ({ id })),
-    defaultModelId: OFFICIAL_MODEL_PRESETS.openai[0],
+    advanced: {},
+    models: [],
+    defaultModelId: "",
   };
 }
 
-export function createCustomProfile(): CustomProfile {
+export function createCustomProvider(): CustomProvider {
   return {
     kind: "custom",
-    id: createProfileId(),
-    name: "Relay Daily",
-    providerId: "my-relay",
-    providerName: "My Relay",
+    id: createProviderEntryId(),
+    name: "Relay",
     baseUrl: "https://relay.example.com/v1",
-    api: "openai-completions",
+    api: "",
     apiKey: "",
-    models: [{ id: "deepseek-chat" }],
-    defaultModelId: "deepseek-chat",
+    headers: [],
+    authHeader: true,
+    models: [],
+    defaultModelId: "",
   };
 }
 
-export function createProfileId() {
-  return `profile_${crypto.getRandomValues(new Uint32Array(1))[0].toString(16).slice(0, 6)}`;
+export function createProviderEntryId() {
+  return `provider_${crypto.getRandomValues(new Uint32Array(1))[0].toString(16).slice(0, 6)}`;
+}
+
+export function createModel(id = ""): ModelConfig {
+  return {
+    id,
+    source: "custom",
+    input: ["text"],
+  };
 }
 
 export function sanitizeProviderId(value: string) {
   return value.replace(/\s+/g, "");
 }
 
-export function profileProviderId(profile: Profile) {
-  return profile.kind === "official" ? profile.providerId : sanitizeProviderId(profile.providerId);
+export function piProviderId(provider: Provider) {
+  return provider.kind === "official" ? provider.providerId : sanitizeProviderId(provider.name) || provider.id;
 }
 
 export function normalizeConfig(config: AppConfig): AppConfig {
-  const activeProfileId =
-    config.activeProfileId && config.profiles.some((profile) => profile.id === config.activeProfileId)
-      ? config.activeProfileId
-      : config.profiles[0]?.id;
+  const activeProviderId =
+    config.activeProviderId && config.providers.some((provider) => provider.id === config.activeProviderId)
+      ? config.activeProviderId
+      : config.providers[0]?.id;
   return {
     ...defaultConfig(),
     ...config,
-    activeProfileId,
-    profiles: config.profiles ?? [],
+    activeProviderId,
+    providers: config.providers ?? [],
   };
 }
 
-export function validationErrors(profile: Profile | undefined) {
+export function validationErrors(provider: Provider | undefined) {
   const errors: Record<string, string> = {};
-  if (!profile) {
-    errors.form = "NO_PROFILE";
+  if (!provider) {
+    errors.form = "NO_PROVIDER";
     return errors;
   }
-  if (!profile.name.trim()) errors.name = "REQUIRED";
-  if (!profile.apiKey.trim()) errors.apiKey = "REQUIRED";
-  if (profile.models.length === 0) errors.models = "MODEL_REQUIRED";
-  if (!profile.models.some((model) => model.id === profile.defaultModelId)) {
+  if (!provider.name.trim()) errors.name = "REQUIRED";
+  if (provider.kind === "official" && provider.authMode === "apiKey" && !provider.apiKey.trim()) errors.apiKey = "REQUIRED";
+  if (provider.kind === "custom" && !provider.apiKey.trim()) errors.apiKey = "REQUIRED";
+  if (enabledModels(provider).length === 0) errors.models = "MODEL_REQUIRED";
+  if (!enabledModels(provider).some((model) => model.id === provider.defaultModelId)) {
     errors.models = "DEFAULT_MODEL_MISSING";
   }
-  if (profile.kind === "custom") {
-    const providerId = sanitizeProviderId(profile.providerId);
-    if (!providerId) errors.providerId = "REQUIRED";
-    if (OFFICIAL_PROVIDER_IDS.includes(providerId as OfficialProviderId)) errors.providerId = "RESERVED";
-    if (!profile.baseUrl.trim()) errors.baseUrl = "REQUIRED";
-    if (!profile.api) errors.api = "REQUIRED";
+  if (hasDuplicateModels(provider.models)) errors.models = "DUPLICATE_MODEL";
+  if (provider.models.some((model) => !model.id.trim())) errors.models = "MODEL_ID_REQUIRED";
+  if (provider.models.some(hasInvalidNumbers)) errors.models = "INVALID_NUMBER";
+  if (provider.models.some(hasInvalidHeaders)) errors.models = "INVALID_HEADER";
+  if (provider.kind === "custom") {
+    const providerId = piProviderId(provider);
+    if (OFFICIAL_PROVIDER_IDS.includes(providerId as OfficialProviderId)) errors.name = "RESERVED";
+    if (!provider.baseUrl.trim()) errors.baseUrl = "REQUIRED";
+    if (!provider.api) errors.api = "REQUIRED";
+    if (hasInvalidHeaders({ headers: provider.headers })) errors.headers = "INVALID_HEADER";
+  }
+  if (provider.kind === "official" && hasInvalidHeaders({ headers: provider.advanced?.headers })) {
+    errors.headers = "INVALID_HEADER";
   }
   return errors;
+}
+
+export function enabledModels(provider: Provider) {
+  return provider.models;
+}
+
+function hasDuplicateModels(models: ModelConfig[]) {
+  const ids = new Set<string>();
+  for (const model of models) {
+    const id = model.id.trim();
+    if (!id) continue;
+    if (ids.has(id)) return true;
+    ids.add(id);
+  }
+  return false;
+}
+
+function hasInvalidNumbers(model: ModelConfig) {
+  if (model.contextWindow !== undefined && (!Number.isFinite(model.contextWindow) || model.contextWindow <= 0)) return true;
+  if (model.maxTokens !== undefined && (!Number.isFinite(model.maxTokens) || model.maxTokens <= 0)) return true;
+  const costs = [model.cost?.input, model.cost?.output, model.cost?.cacheRead, model.cost?.cacheWrite];
+  return costs.some((value) => value !== undefined && (!Number.isFinite(value) || value < 0));
+}
+
+function hasInvalidHeaders(value: { headers?: HeaderEntry[] }) {
+  return (value.headers ?? []).some((header) => !header.key.trim());
 }

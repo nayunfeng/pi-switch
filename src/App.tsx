@@ -1,38 +1,49 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Check,
+  CirclePlay,
+  CircleHelp,
   Copy,
   Download,
   Eye,
   EyeOff,
   Plus,
+  RefreshCw,
   Save,
+  Settings2,
   Trash2,
-  WandSparkles,
+  X,
 } from "lucide-react";
 import {
-  applyProfileToPi,
+  applyProviderToPi,
   fetchCustomProviderModels,
+  listPiModels,
   loadAppConfig,
   saveAppConfig,
-  testProfile as runTestProfile,
+  testProvider as runTestProvider,
 } from "./commands";
 import {
   API_PRESETS,
   AppConfig,
   AppError,
-  createCustomProfile,
-  createOfficialProfile,
-  ModelEntry,
+  AuthMode,
+  CompatConfig,
+  createCustomProvider,
+  createModel,
+  createOfficialProvider,
+  enabledModels,
+  HeaderEntry,
+  ModelConfig,
   normalizeConfig,
-  OFFICIAL_MODEL_PRESETS,
   OFFICIAL_PROVIDER_IDS,
   OFFICIAL_PROVIDER_LABELS,
   OfficialProviderId,
-  Profile,
+  piProviderId,
+  PiModelInfo,
+  Provider,
   ResolvedPaths,
-  sanitizeProviderId,
   ThemeMode,
+  ThinkingLevel,
   validationErrors,
 } from "./domain";
 import { createTranslator, systemLanguage } from "./i18n";
@@ -42,23 +53,42 @@ type TestState = {
   output: string;
 };
 
+type ToastState = {
+  kind: "success" | "error" | "info";
+  message: string;
+};
+
+type ModelDraft = {
+  model: ModelConfig;
+  index?: number;
+};
+
+const EMPTY_MODEL_DRAFT: ModelDraft = { model: createModel() };
+const THINKING_LEVELS: ThinkingLevel[] = ["off", "minimal", "low", "medium", "high", "xhigh"];
+
 function App() {
-  const [config, setConfig] = useState<AppConfig>(() => normalizeConfig({ schemaVersion: 1, theme: "system", profiles: [] }));
+  const [config, setConfig] = useState<AppConfig>(() => normalizeConfig({ schemaVersion: 2, theme: "system", providers: [] }));
   const [paths, setPaths] = useState<ResolvedPaths>();
   const [loading, setLoading] = useState(true);
   const [showKey, setShowKey] = useState(false);
-  const [newModelId, setNewModelId] = useState("");
-  const [error, setError] = useState("");
+  const [toast, setToast] = useState<ToastState>();
   const [testState, setTestState] = useState<TestState>({ status: "idle", output: "" });
   const [candidateModels, setCandidateModels] = useState<string[]>([]);
   const [selectedCandidates, setSelectedCandidates] = useState<Set<string>>(new Set());
   const [modelSearch, setModelSearch] = useState("");
   const [fetching, setFetching] = useState(false);
+  const [piModels, setPiModels] = useState<PiModelInfo[]>([]);
+  const [piModelsLoading, setPiModelsLoading] = useState(false);
+  const [piModelSearch, setPiModelSearch] = useState("");
+  const [modelDraft, setModelDraft] = useState<ModelDraft>(EMPTY_MODEL_DRAFT);
   const deleteDialogRef = useRef<HTMLDialogElement>(null);
+  const modelDialogRef = useRef<HTMLDialogElement>(null);
+  const providerAdvancedDialogRef = useRef<HTMLDialogElement>(null);
+  const outputDialogRef = useRef<HTMLDialogElement>(null);
   const language = config.language ?? systemLanguage();
   const t = useMemo(() => createTranslator(language), [language]);
-  const activeProfile = config.profiles.find((profile) => profile.id === config.activeProfileId);
-  const errors = validationErrors(activeProfile);
+  const activeProvider = config.providers.find((provider) => provider.id === config.activeProviderId);
+  const errors = validationErrors(activeProvider);
 
   useEffect(() => {
     loadAppConfig()
@@ -66,9 +96,20 @@ function App() {
         setConfig(normalizeConfig(result.config));
         setPaths(result.resolvedPaths);
       })
-      .catch((err) => setError(formatError(err, t)))
+      .catch((err) => showError(err))
       .finally(() => setLoading(false));
   }, []);
+
+  useEffect(() => {
+    if (!toast) return;
+    const timer = window.setTimeout(() => setToast(undefined), toastDuration(toast.kind));
+    return () => window.clearTimeout(timer);
+  }, [toast]);
+
+  useEffect(() => {
+    document.documentElement.lang = language;
+    document.title = t("title");
+  }, [language, t]);
 
   useEffect(() => {
     const root = document.documentElement;
@@ -84,128 +125,190 @@ function App() {
 
   function updateConfig(next: AppConfig) {
     setConfig(normalizeConfig(next));
-    setError("");
   }
 
-  function updateActiveProfile(profile: Profile) {
+  function showToast(kind: ToastState["kind"], message: string) {
+    setToast({ kind, message });
+  }
+
+  function showError(err: unknown) {
+    showToast("error", formatError(err, t));
+  }
+
+  function updateActiveProvider(provider: Provider) {
     updateConfig({
       ...config,
-      profiles: config.profiles.map((item) => (item.id === profile.id ? profile : item)),
+      providers: config.providers.map((item) => (item.id === provider.id ? provider : item)),
     });
   }
 
-  function addProfile(kind: "official" | "custom") {
-    const profile = kind === "official" ? createOfficialProfile() : createCustomProfile();
+  function addProvider() {
+    const provider = createCustomProvider();
     updateConfig({
       ...config,
-      activeProfileId: profile.id,
-      profiles: [...config.profiles, profile],
+      activeProviderId: provider.id,
+      providers: [...config.providers, provider],
     });
     setShowKey(false);
   }
 
-  function duplicateProfile() {
-    if (!activeProfile) return;
-    const clone: Profile = {
-      ...structuredClone(activeProfile),
-      id: crypto.getRandomValues(new Uint32Array(1))[0].toString(16).padStart(6, "0"),
-      name: `${activeProfile.name} Copy`,
+  function duplicateProvider() {
+    if (!activeProvider) return;
+    const clone: Provider = {
+      ...structuredClone(activeProvider),
+      id: `provider_${crypto.getRandomValues(new Uint32Array(1))[0].toString(16).padStart(6, "0").slice(0, 6)}`,
+      name: `${activeProvider.name} Copy`,
     };
-    clone.id = `profile_${clone.id.slice(0, 6)}`;
-    updateConfig({ ...config, activeProfileId: clone.id, profiles: [...config.profiles, clone] });
+    updateConfig({ ...config, activeProviderId: clone.id, providers: [...config.providers, clone] });
   }
 
-  function deleteProfile() {
-    if (!activeProfile) return;
-    const profiles = config.profiles.filter((profile) => profile.id !== activeProfile.id);
-    updateConfig({ ...config, activeProfileId: profiles[0]?.id, profiles });
+  function deleteProvider() {
+    if (!activeProvider) return;
+    const providers = config.providers.filter((provider) => provider.id !== activeProvider.id);
+    updateConfig({ ...config, activeProviderId: providers[0]?.id, providers });
     deleteDialogRef.current?.close();
   }
 
   async function saveCurrentConfig(nextConfig = config) {
-    const profile = nextConfig.profiles.find((item) => item.id === nextConfig.activeProfileId);
-    if (Object.keys(validationErrors(profile)).length > 0) {
-      setError(t("validationFailed"));
+    const provider = nextConfig.providers.find((item) => item.id === nextConfig.activeProviderId);
+    if (Object.keys(validationErrors(provider)).length > 0) {
+      showToast("error", t("validationFailed"));
       return false;
     }
     try {
       await saveAppConfig(nextConfig);
-      setError("");
+      showToast("success", t("saveSuccess"));
       return true;
     } catch (err) {
-      setError(formatError(err, t));
+      showError(err);
       return false;
     }
   }
 
-  async function applyCurrentProfile() {
-    if (!activeProfile) return;
+  async function applyCurrentProvider() {
+    if (!activeProvider) return;
     if (Object.keys(errors).length > 0) {
-      setError(t("validationFailed"));
+      showToast("error", t("validationFailed"));
       return;
     }
     try {
-      await applyProfileToPi(config, activeProfile.id);
-      setError("");
+      await applyProviderToPi(config, activeProvider.id);
+      showToast("success", t("applySuccess"));
     } catch (err) {
-      setError(formatError(err, t));
+      showError(err);
     }
   }
 
-  async function testCurrentProfile() {
-    if (!activeProfile) return;
+  async function testCurrentProvider() {
+    if (!activeProvider) return;
     const saved = await saveCurrentConfig();
     if (!saved) return;
     setTestState({ status: "running", output: 'pi -p "ping"\n' });
     try {
-      const result = await runTestProfile(config, activeProfile.id);
+      const result = await runTestProvider(config, activeProvider.id);
       const status = result.status;
       const exitLine = result.exitCode === undefined ? "" : `exitCode: ${result.exitCode}\n`;
       setTestState({
         status,
         output: `${exitLine}stdout:\n${result.stdout || ""}\n\nstderr:\n${result.stderr || ""}`,
       });
-      setError("");
+      showToast(status === "success" ? "success" : "error", status === "success" ? t("testSuccess") : t("testFailed"));
     } catch (err) {
       setTestState({ status: "failed", output: formatError(err, t) });
-      setError(formatError(err, t));
+      showError(err);
+    }
+  }
+
+  async function refreshPiModels() {
+    if (!activeProvider || activeProvider.kind !== "official") return;
+    setPiModelsLoading(true);
+    try {
+      const apiKey = activeProvider.authMode === "apiKey" ? activeProvider.apiKey : undefined;
+      const models = await listPiModels(activeProvider.providerId, apiKey);
+      setPiModels(models);
+      showToast(models.length > 0 ? "success" : "info", models.length > 0 ? t("refreshPiModelsSuccess") : t("noAvailablePiModels"));
+    } catch (err) {
+      setPiModels([]);
+      showError(err);
+    } finally {
+      setPiModelsLoading(false);
     }
   }
 
   async function fetchModels() {
-    if (!activeProfile || activeProfile.kind !== "custom") return;
+    if (!activeProvider || activeProvider.kind !== "custom") return;
     setFetching(true);
     setSelectedCandidates(new Set());
     setModelSearch("");
+    if (!activeProvider.baseUrl.trim() || !activeProvider.apiKey.trim()) {
+      setCandidateModels([]);
+      showToast("error", t("fetchRequirements"));
+      setFetching(false);
+      return;
+    }
     try {
-      const models = await fetchCustomProviderModels(activeProfile.baseUrl, activeProfile.apiKey);
+      const models = await fetchCustomProviderModels(activeProvider.baseUrl, activeProvider.apiKey);
       setCandidateModels(models);
-      setError("");
+      showToast("success", t("fetchModelsSuccess"));
     } catch (err) {
       setCandidateModels([]);
-      setError(formatError(err, t));
+      showError(err);
     } finally {
       setFetching(false);
     }
   }
 
   function addSelectedModels() {
-    if (!activeProfile) return;
-    const existing = new Set(activeProfile.models.map((model) => model.id));
-    const additions = [...selectedCandidates].filter((model) => !existing.has(model)).map((id) => ({ id }));
-    updateActiveProfile({ ...activeProfile, models: [...activeProfile.models, ...additions] });
+    if (!activeProvider) return;
+    const existing = new Set(activeProvider.models.map((model) => model.id));
+    const additions = [...selectedCandidates]
+      .map((id) => id.trim())
+      .filter((id) => id && !existing.has(id))
+      .map((id) => createModel(id));
+    updateActiveProvider(withValidDefaultModel({ ...activeProvider, models: [...activeProvider.models, ...additions] }));
     setSelectedCandidates(new Set());
   }
 
-  function addManualModel() {
-    if (!activeProfile || newModelId === "") return;
-    const models = [...activeProfile.models, { id: newModelId }];
-    updateActiveProfile({
-      ...activeProfile,
-      models,
-      defaultModelId: activeProfile.defaultModelId || newModelId,
-    });
-    setNewModelId("");
+  function openAddModelDialog(model?: ModelConfig) {
+    setModelDraft({ model: model ? structuredClone(model) : createModel(), index: undefined });
+    modelDialogRef.current?.showModal();
+  }
+
+  function openEditModelDialog(model: ModelConfig, index: number) {
+    setModelDraft({ model: structuredClone(model), index });
+    modelDialogRef.current?.showModal();
+  }
+
+  function saveModelDraft() {
+    if (!activeProvider) return;
+    const model = normalizeModelDraft(modelDraft.model);
+    if (!model.id) return;
+    const existsAt = activeProvider.models.findIndex((item, index) => item.id === model.id && index !== modelDraft.index);
+    if (existsAt >= 0) return;
+    const models =
+      modelDraft.index === undefined
+        ? [...activeProvider.models, model]
+        : activeProvider.models.map((item, index) => (index === modelDraft.index ? model : item));
+    updateActiveProvider(withValidDefaultModel({ ...activeProvider, models, defaultModelId: activeProvider.defaultModelId || model.id }));
+    modelDialogRef.current?.close();
+  }
+
+  function removeModel(model: ModelConfig) {
+    if (!activeProvider) return;
+    updateActiveProvider(withValidDefaultModel({ ...activeProvider, models: activeProvider.models.filter((item) => item.id !== model.id) }));
+  }
+
+  function toggleOfficialModel(modelId: string, checked: boolean) {
+    if (!activeProvider || activeProvider.kind !== "official") return;
+    const models = checked
+      ? [...activeProvider.models, { ...createModel(modelId), source: "builtin" as const }]
+      : activeProvider.models.filter((model) => model.id !== modelId);
+    updateActiveProvider(withValidDefaultModel({ ...activeProvider, models, defaultModelId: activeProvider.defaultModelId || modelId }));
+  }
+
+  function updateDefaultModel(defaultModelId: string) {
+    if (!activeProvider) return;
+    updateActiveProvider({ ...activeProvider, defaultModelId });
   }
 
   if (loading) {
@@ -214,6 +317,7 @@ function App() {
 
   return (
     <div className="grid min-h-screen grid-rows-[auto_1fr_auto]" style={{ background: "var(--bg)" }}>
+      {toast ? <Toast toast={toast} onClose={() => setToast(undefined)} /> : null}
       <header className="flex items-center justify-between gap-4 border-b px-5 py-3" style={{ borderColor: "var(--border)", background: "var(--surface)" }}>
         <div>
           <h1 className="m-0 text-xl font-semibold">{t("title")}</h1>
@@ -241,62 +345,59 @@ function App() {
       <main className="workspace grid min-h-0 grid-cols-[280px_minmax(0,1fr)]">
         <aside className="min-h-0 border-r p-4" style={{ borderColor: "var(--border)", background: "var(--surface-muted)" }}>
           <div className="mb-3 flex items-center justify-between">
-            <h2 className="m-0 text-base font-semibold">{t("profiles")}</h2>
+            <h2 className="m-0 text-base font-semibold">{t("providers")}</h2>
           </div>
           <div className="mb-3 grid grid-cols-2 gap-2">
-            <button type="button" className="flex items-center justify-center gap-2" onClick={() => addProfile("official")}>
-              <Plus size={15} /> {t("newOfficial")}
+            <button type="button" className="flex items-center justify-center gap-2" onClick={addProvider}>
+              <Plus size={15} /> {t("newProvider")}
             </button>
-            <button type="button" className="flex items-center justify-center gap-2" onClick={() => addProfile("custom")}>
-              <WandSparkles size={15} /> {t("newCustom")}
-            </button>
-            <button type="button" className="flex items-center justify-center gap-2" onClick={duplicateProfile} disabled={!activeProfile}>
+            <button type="button" className="flex items-center justify-center gap-2" onClick={duplicateProvider} disabled={!activeProvider}>
               <Copy size={15} /> {t("duplicate")}
             </button>
-            <button type="button" className="danger flex items-center justify-center gap-2" onClick={() => deleteDialogRef.current?.showModal()} disabled={!activeProfile}>
+            <button type="button" className="danger col-span-2 flex items-center justify-center gap-2" onClick={() => deleteDialogRef.current?.showModal()} disabled={!activeProvider}>
               <Trash2 size={15} /> {t("delete")}
             </button>
           </div>
           <div className="grid gap-2">
-            {config.profiles.map((profile) => (
+            {config.providers.map((provider) => (
               <button
                 type="button"
-                key={profile.id}
-                className={`profile-item ${profile.id === config.activeProfileId ? "active" : ""}`}
-                onClick={() => updateConfig({ ...config, activeProfileId: profile.id })}
+                key={provider.id}
+                className={`provider-item ${provider.id === config.activeProviderId ? "active" : ""}`}
+                onClick={() => updateConfig({ ...config, activeProviderId: provider.id })}
               >
-                <strong>{profile.name}</strong>
-                <span className="profile-meta">
-                  {profile.kind === "official" ? t("official") : t("custom")} / {profileProviderLabel(profile)}
+                <strong>{provider.name}</strong>
+                <span className="provider-meta">
+                  {provider.kind === "official" ? t("official") : t("custom")} / {providerLabel(provider)}
                 </span>
-                <span className="profile-meta">{profile.defaultModelId}</span>
+                <span className="provider-meta">{provider.defaultModelId || t("noDefaultModel")}</span>
               </button>
             ))}
           </div>
         </aside>
 
         <section className="min-w-0 overflow-auto p-5">
-          {!activeProfile ? (
-            <div className="grid min-h-[420px] place-items-center muted">{t("noProfile")}</div>
+          {!activeProvider ? (
+            <div className="grid min-h-[420px] place-items-center muted">{t("noProvider")}</div>
           ) : (
-            <div className="grid max-w-[960px] gap-4">
+            <div className="grid max-w-[1040px] gap-4">
               <div className="flex items-center justify-between gap-3">
-                <h2 className="m-0 text-lg font-semibold">{activeProfile.name}</h2>
+                <h2 className="m-0 text-lg font-semibold">{activeProvider.name}</h2>
                 <span className="rounded-full border px-3 py-1 text-xs" style={{ borderColor: "var(--border)", color: "var(--muted)" }}>
-                  {activeProfile.kind === "official" ? t("official") : t("custom")}
+                  {activeProvider.kind === "official" ? t("official") : t("custom")}
                 </span>
               </div>
 
               <div className="editor-grid grid grid-cols-2 gap-4">
-                <Field label={t("name")} error={fieldError(errors.name, t)}>
-                  <input value={activeProfile.name} onChange={(event) => updateActiveProfile({ ...activeProfile, name: event.target.value })} />
+                <Field label={t("name")} error={fieldError(errors.name, t)} required>
+                  <input value={activeProvider.name} onChange={(event) => updateActiveProvider({ ...activeProvider, name: event.target.value })} />
                 </Field>
                 <Field label={t("kind")}>
                   <select
-                    value={activeProfile.kind}
+                    value={activeProvider.kind}
                     onChange={(event) => {
-                      const replacement = event.target.value === "official" ? createOfficialProfile() : createCustomProfile();
-                      updateActiveProfile({ ...replacement, id: activeProfile.id, name: activeProfile.name });
+                      const replacement = event.target.value === "official" ? createOfficialProvider() : createCustomProvider();
+                      updateActiveProvider({ ...replacement, id: activeProvider.id, name: activeProvider.name });
                     }}
                   >
                     <option value="official">{t("official")}</option>
@@ -305,97 +406,96 @@ function App() {
                 </Field>
               </div>
 
-              {activeProfile.kind === "official" ? (
-                <OfficialProviderForm profile={activeProfile} onChange={updateActiveProfile} t={t} />
+              {activeProvider.kind === "official" ? (
+                <OfficialProviderForm provider={activeProvider} onChange={updateActiveProvider} errors={errors} showKey={showKey} setShowKey={setShowKey} onOpenAdvanced={() => providerAdvancedDialogRef.current?.showModal()} t={t} />
               ) : (
-                <CustomProviderForm profile={activeProfile} onChange={updateActiveProfile} errors={errors} t={t} />
+                <CustomProviderForm provider={activeProvider} onChange={updateActiveProvider} errors={errors} showKey={showKey} setShowKey={setShowKey} onOpenAdvanced={() => providerAdvancedDialogRef.current?.showModal()} t={t} />
               )}
 
-              <Field label={t("apiKey")} error={fieldError(errors.apiKey, t)}>
-                <div className="grid grid-cols-[minmax(0,1fr)_auto] gap-2">
-                  <input
-                    type={showKey ? "text" : "password"}
-                    value={activeProfile.apiKey}
-                    onChange={(event) => updateActiveProfile({ ...activeProfile, apiKey: event.target.value })}
-                  />
-                  <button type="button" className="icon-button" title={showKey ? t("hide") : t("show")} onClick={() => setShowKey(!showKey)}>
-                    {showKey ? <EyeOff size={16} /> : <Eye size={16} />}
-                  </button>
-                </div>
-              </Field>
-
               <section className="grid gap-3">
-                <div className="flex items-center justify-between gap-3">
+                <div className="flex flex-wrap items-center justify-between gap-3">
                   <h3 className="m-0 text-base font-semibold">{t("models")}</h3>
-                  {activeProfile.kind === "custom" ? (
-                    <button type="button" className="flex items-center gap-2" onClick={fetchModels} disabled={fetching}>
-                      <Download size={15} /> {t("fetchModels")}
+                  <div className="flex flex-wrap gap-2">
+                    {activeProvider.kind === "official" ? (
+                      <button type="button" className="flex items-center gap-2" onClick={refreshPiModels} disabled={piModelsLoading}>
+                        <RefreshCw size={15} /> {t("refreshPiModels")}
+                      </button>
+                    ) : (
+                      <button type="button" className="flex items-center gap-2" onClick={fetchModels} disabled={fetching}>
+                        <Download size={15} /> {t("fetchModels")}
+                      </button>
+                    )}
+                    <button type="button" className="flex items-center gap-2" onClick={() => openAddModelDialog()}>
+                      <Plus size={15} /> {t("addModel")}
                     </button>
-                  ) : null}
+                  </div>
                 </div>
-                <div className="grid gap-2 rounded-md border p-2" style={{ borderColor: "var(--border)", background: "var(--surface)" }}>
-                  {activeProfile.models.map((model) => (
-                    <ModelRow key={model.id} model={model} profile={activeProfile} onChange={updateActiveProfile} t={t} />
-                  ))}
-                </div>
-                <div className="grid grid-cols-[minmax(0,1fr)_auto] gap-2">
-                  <input value={newModelId} placeholder={t("modelPlaceholder")} onChange={(event) => setNewModelId(event.target.value)} />
-                  <button type="button" onClick={addManualModel}>
-                    {t("addModel")}
-                  </button>
-                </div>
-                <div className="field-error">{fieldError(errors.models, t)}</div>
+                {activeProvider.kind === "official" ? (
+                  <OfficialModelSelector
+                    provider={activeProvider}
+                    piModels={piModels}
+                    loading={piModelsLoading}
+                    search={piModelSearch}
+                    onSearch={setPiModelSearch}
+                    onToggle={toggleOfficialModel}
+                    onEdit={openEditModelDialog}
+                    onRemove={removeModel}
+                    t={t}
+                  />
+                ) : (
+                  <CustomModelSelector
+                    provider={activeProvider}
+                    candidateModels={candidateModels}
+                    selectedCandidates={selectedCandidates}
+                    search={modelSearch}
+                    fetching={fetching}
+                    onSearch={setModelSearch}
+                    onSelect={setSelectedCandidates}
+                    onAddSelected={addSelectedModels}
+                    onEdit={openEditModelDialog}
+                    onRemove={removeModel}
+                    t={t}
+                  />
+                )}
+
+                <Field label={t("defaultModel")} error={fieldError(errors.models, t)} required>
+                  <select value={activeProvider.defaultModelId} onChange={(event) => updateDefaultModel(event.target.value)} disabled={enabledModels(activeProvider).length === 0}>
+                    {enabledModels(activeProvider).map((model) => (
+                      <option key={model.id} value={model.id}>
+                        {model.id}
+                      </option>
+                    ))}
+                  </select>
+                </Field>
               </section>
 
-              {activeProfile.kind === "custom" && (candidateModels.length > 0 || fetching) ? (
-                <section className="grid gap-3 rounded-md border p-3" style={{ borderColor: "var(--border)", background: "var(--surface)" }}>
-                  <input value={modelSearch} placeholder={t("searchModels")} onChange={(event) => setModelSearch(event.target.value)} />
-                  <div className="grid max-h-56 gap-2 overflow-auto">
-                    {candidateModels
-                      .filter((model) => model.toLowerCase().includes(modelSearch.toLowerCase()))
-                      .map((model) => (
-                        <label key={model} className="flex items-center gap-2 rounded-md border px-2 py-2" style={{ borderColor: "var(--border)" }}>
-                          <input
-                            className="w-auto"
-                            type="checkbox"
-                            checked={selectedCandidates.has(model)}
-                            onChange={(event) => {
-                              const next = new Set(selectedCandidates);
-                              if (event.target.checked) next.add(model);
-                              else next.delete(model);
-                              setSelectedCandidates(next);
-                            }}
-                          />
-                          <span className="model-id">{model}</span>
-                        </label>
-                      ))}
-                  </div>
-                  <button type="button" onClick={addSelectedModels} disabled={selectedCandidates.size === 0}>
-                    {t("addSelected")}
+              <div className="grid gap-3">
+                <div className="flex flex-wrap gap-2">
+                  <button type="button" className="primary flex items-center gap-2" onClick={() => saveCurrentConfig()}>
+                    <Save size={15} /> {t("save")}
                   </button>
-                </section>
-              ) : null}
-
-              <div className="flex flex-wrap gap-2">
-                <button type="button" className="primary flex items-center gap-2" onClick={() => saveCurrentConfig()}>
-                  <Save size={15} /> {t("save")}
-                </button>
-                <button type="button" className="flex items-center gap-2" onClick={applyCurrentProfile}>
-                  <Check size={15} /> {t("apply")}
-                </button>
-                <button type="button" className="flex items-center gap-2" onClick={testCurrentProfile}>
-                  <WandSparkles size={15} /> {t("test")}
-                </button>
+                  <button type="button" className="flex items-center gap-2" onClick={applyCurrentProvider}>
+                    <Check size={15} /> {t("apply")}
+                  </button>
+                  <button type="button" className="flex items-center gap-2" onClick={testCurrentProvider}>
+                    <CirclePlay size={15} /> {t("test")}
+                  </button>
+                  <button type="button" onClick={() => outputDialogRef.current?.showModal()}>
+                    {t("viewOutput")}
+                  </button>
+                </div>
               </div>
             </div>
           )}
         </section>
       </main>
 
-      <footer className="grid gap-3 border-t px-5 py-3" style={{ borderColor: "var(--border)", background: "var(--surface)" }}>
-        {error ? <div className="rounded-md border p-3 text-sm" style={{ borderColor: "var(--danger)", color: "var(--danger)" }}>{error}</div> : null}
-        <div className="flex items-center justify-between gap-3">
-          <strong>{t("output")}</strong>
+      <dialog ref={outputDialogRef} className="dialog model-dialog p-4">
+        <button type="button" className="dialog-close icon-button" title={t("close")} onClick={() => outputDialogRef.current?.close()}>
+          <X size={16} />
+        </button>
+        <div className="mb-3 flex items-center justify-between gap-3">
+          <h3 className="m-0 text-base font-semibold">{t("output")}</h3>
           <span className="muted">{testState.status === "idle" ? t("idleOutput") : t(testState.status)}</span>
         </div>
         <pre className="output">{testState.output || t("idleOutput")}</pre>
@@ -410,17 +510,54 @@ function App() {
             </div>
           </details>
         ) : null}
-      </footer>
+      </dialog>
 
       <dialog ref={deleteDialogRef} className="dialog p-4">
         <p>
-          {t("deleteConfirmPrefix")} "{activeProfile?.name}"?
+          {t("deleteConfirmPrefix")} "{activeProvider?.name}"?
         </p>
         <div className="flex justify-end gap-2">
           <button type="button" onClick={() => deleteDialogRef.current?.close()}>
             {t("cancel")}
           </button>
-          <button type="button" className="danger" onClick={deleteProfile}>
+          <button type="button" className="danger" onClick={deleteProvider}>
+            {t("confirm")}
+          </button>
+        </div>
+      </dialog>
+
+      <dialog ref={modelDialogRef} className="dialog model-dialog p-4">
+        <button type="button" className="dialog-close icon-button" title={t("close")} onClick={() => modelDialogRef.current?.close()}>
+          <X size={16} />
+        </button>
+        <ModelConfigForm draft={modelDraft.model} providerKind={activeProvider?.kind ?? "custom"} onChange={(model) => setModelDraft({ ...modelDraft, model })} t={t} />
+        <div className="mt-4 flex justify-end gap-2">
+          <button type="button" onClick={() => modelDialogRef.current?.close()}>
+            {t("cancel")}
+          </button>
+          <button type="button" className="primary" onClick={saveModelDraft}>
+            {t("confirm")}
+          </button>
+        </div>
+      </dialog>
+
+      <dialog ref={providerAdvancedDialogRef} className="dialog model-dialog p-4">
+        <button type="button" className="dialog-close icon-button" title={t("close")} onClick={() => providerAdvancedDialogRef.current?.close()}>
+          <X size={16} />
+        </button>
+        <h3 className="m-0 mb-4 text-base font-semibold">{t("providerAdvanced")}</h3>
+        {activeProvider?.kind === "official" ? (
+          <ProviderAdvancedForm value={activeProvider.advanced ?? {}} onChange={(advanced) => updateActiveProvider({ ...activeProvider, advanced })} errors={errors} t={t} />
+        ) : null}
+        {activeProvider?.kind === "custom" ? (
+          <div className="grid gap-4">
+            <Checkbox checked={activeProvider.authHeader ?? false} onChange={(authHeader) => updateActiveProvider({ ...activeProvider, authHeader })} label={t("authHeader")} help={t("authHeaderHelp")} />
+            <HeadersEditor value={activeProvider.headers ?? []} onChange={(headers) => updateActiveProvider({ ...activeProvider, headers })} t={t} />
+            <CompatForm value={activeProvider.compat ?? {}} onChange={(compat) => updateActiveProvider({ ...activeProvider, compat })} t={t} />
+          </div>
+        ) : null}
+        <div className="mt-4 flex justify-end gap-2">
+          <button type="button" className="primary" onClick={() => providerAdvancedDialogRef.current?.close()}>
             {t("confirm")}
           </button>
         </div>
@@ -429,120 +566,658 @@ function App() {
   );
 }
 
-function Field({ label, error, children }: { label: string; error?: string; children: React.ReactNode }) {
+function RequiredMark() {
+  return <span className="required-mark" aria-hidden="true">*</span>;
+}
+
+function Toast({ toast, onClose }: { toast: ToastState; onClose: () => void }) {
+  const duration = toastDuration(toast.kind);
+  return (
+    <div className={`toast toast-${toast.kind}`} role={toast.kind === "error" ? "alert" : "status"} style={{ "--toast-duration": `${duration}ms` } as React.CSSProperties}>
+      <span>{toast.message}</span>
+      <button type="button" className="icon-button" title="Close" onClick={onClose}>
+        <X size={14} />
+      </button>
+      <span className="toast-progress" />
+    </div>
+  );
+}
+
+function toastDuration(kind: ToastState["kind"]) {
+  return kind === "error" ? 5200 : 2800;
+}
+
+function Field({ label, error, required, children }: { label: string; error?: string; required?: boolean; children: React.ReactNode }) {
   return (
     <label>
-      <span>{label}</span>
+      <span>{label}{required ? <RequiredMark /> : null}</span>
       {children}
       <div className="field-error">{error}</div>
     </label>
   );
 }
 
+function LabeledField({ label, field, help, required, children }: { label: string; field?: string; help?: string; required?: boolean; children: React.ReactNode }) {
+  return (
+    <label>
+      <span>
+        {label}{required ? <RequiredMark /> : null}
+        {help ? <InlineHelp help={help} /> : null}
+        {field ? <code className="field-code">{field}</code> : null}
+      </span>
+      {children}
+    </label>
+  );
+}
+
+function SectionTitle({ children }: { children: React.ReactNode }) {
+  return <strong className="text-sm">{children}</strong>;
+}
+
+function SummaryHelp({ label, help }: { label: string; help: string }) {
+  return (
+    <span className="summary-label">
+      <span>{label}</span>
+      <span className="help-tip" tabIndex={0} aria-label={help}>
+        <CircleHelp size={14} />
+        <span className="help-popover">{help}</span>
+      </span>
+    </span>
+  );
+}
+
+function InlineHelp({ help }: { help: string }) {
+  return (
+    <span className="help-tip inline-help" tabIndex={0} aria-label={help}>
+      <CircleHelp size={13} />
+      <span className="help-popover">{help}</span>
+    </span>
+  );
+}
+
+function AdvancedButton({ label, help, onClick }: { label: string; help: string; onClick: () => void }) {
+  return (
+    <div className="advanced-entry">
+      <button type="button" className="flex items-center gap-2" onClick={onClick}>
+        <Settings2 size={15} /> {label}
+      </button>
+      <InlineHelp help={help} />
+    </div>
+  );
+}
+
 function OfficialProviderForm({
-  profile,
+  provider,
   onChange,
+  errors,
+  showKey,
+  setShowKey,
+  onOpenAdvanced,
   t,
 }: {
-  profile: Extract<Profile, { kind: "official" }>;
-  onChange: (profile: Profile) => void;
+  provider: Extract<Provider, { kind: "official" }>;
+  onChange: (provider: Provider) => void;
+  errors: Record<string, string>;
+  showKey: boolean;
+  setShowKey: (show: boolean) => void;
+  onOpenAdvanced: () => void;
   t: ReturnType<typeof createTranslator>;
 }) {
   return (
-    <Field label={t("provider")}>
-      <select
-        value={profile.providerId}
-        onChange={(event) => {
-          const providerId = event.target.value as OfficialProviderId;
-          const presets = OFFICIAL_MODEL_PRESETS[providerId].map((id) => ({ id }));
-          onChange({
-            ...profile,
-            providerId,
-            models: presets,
-            defaultModelId: presets[0]?.id ?? "",
-          });
-        }}
-      >
-        {OFFICIAL_PROVIDER_IDS.map((providerId) => (
-          <option key={providerId} value={providerId}>
-            {OFFICIAL_PROVIDER_LABELS[providerId]}
-          </option>
-        ))}
-      </select>
-    </Field>
+    <div className="grid gap-4">
+      <div className="editor-grid grid grid-cols-2 gap-4">
+        <Field label={t("provider")}>
+          <select
+            value={provider.providerId}
+            onChange={(event) => {
+              const providerId = event.target.value as OfficialProviderId;
+              onChange({
+                ...provider,
+                providerId,
+                name: OFFICIAL_PROVIDER_LABELS[providerId],
+                models: [],
+                defaultModelId: "",
+              });
+            }}
+          >
+            {OFFICIAL_PROVIDER_IDS.map((providerId) => (
+              <option key={providerId} value={providerId}>
+                {OFFICIAL_PROVIDER_LABELS[providerId]}
+              </option>
+            ))}
+          </select>
+        </Field>
+        <Field label={t("authMode")}>
+          <select value={provider.authMode} onChange={(event) => onChange({ ...provider, authMode: event.target.value as AuthMode })}>
+            <option value="existing">{t("authExisting")}</option>
+            <option value="apiKey">{t("authApiKey")}</option>
+          </select>
+        </Field>
+      </div>
+      {provider.authMode === "apiKey" ? (
+        <SecretField value={provider.apiKey} onChange={(apiKey) => onChange({ ...provider, apiKey })} showKey={showKey} setShowKey={setShowKey} error={fieldError(errors.apiKey, t)} required t={t} />
+      ) : null}
+      <AdvancedButton onClick={onOpenAdvanced} label={t("providerAdvanced")} help={t("providerAdvancedHelp")} />
+    </div>
   );
 }
 
 function CustomProviderForm({
-  profile,
+  provider,
+  onChange,
+  errors,
+  showKey,
+  setShowKey,
+  onOpenAdvanced,
+  t,
+}: {
+  provider: Extract<Provider, { kind: "custom" }>;
+  onChange: (provider: Provider) => void;
+  errors: Record<string, string>;
+  showKey: boolean;
+  setShowKey: (show: boolean) => void;
+  onOpenAdvanced: () => void;
+  t: ReturnType<typeof createTranslator>;
+}) {
+  return (
+    <div className="grid gap-4">
+      <div className="editor-grid grid grid-cols-2 gap-4">
+        <Field label={t("baseUrl")} error={fieldError(errors.baseUrl, t)} required>
+          <input value={provider.baseUrl} onChange={(event) => onChange({ ...provider, baseUrl: event.target.value })} />
+        </Field>
+        <ApiSelect value={provider.api} onChange={(api) => onChange({ ...provider, api })} label={t("apiType")} error={fieldError(errors.api, t)} required />
+      </div>
+      <SecretField value={provider.apiKey} onChange={(apiKey) => onChange({ ...provider, apiKey })} showKey={showKey} setShowKey={setShowKey} error={fieldError(errors.apiKey, t)} required t={t} />
+      <AdvancedButton onClick={onOpenAdvanced} label={t("providerAdvanced")} help={t("providerAdvancedHelp")} />
+    </div>
+  );
+}
+
+function SecretField({
+  value,
+  onChange,
+  showKey,
+  setShowKey,
+  error,
+  required,
+  t,
+}: {
+  value: string;
+  onChange: (value: string) => void;
+  showKey: boolean;
+  setShowKey: (show: boolean) => void;
+  error?: string;
+  required?: boolean;
+  t: ReturnType<typeof createTranslator>;
+}) {
+  return (
+    <Field label={t("apiKey")} error={error} required={required}>
+      <div className="grid grid-cols-[minmax(0,1fr)_auto] gap-2">
+        <input type={showKey ? "text" : "password"} value={value} onChange={(event) => onChange(event.target.value)} />
+        <button type="button" className="icon-button" title={showKey ? t("hide") : t("show")} onClick={() => setShowKey(!showKey)}>
+          {showKey ? <EyeOff size={16} /> : <Eye size={16} />}
+        </button>
+      </div>
+    </Field>
+  );
+}
+
+function ProviderAdvancedForm({
+  value,
   onChange,
   errors,
   t,
 }: {
-  profile: Extract<Profile, { kind: "custom" }>;
-  onChange: (profile: Profile) => void;
+  value: NonNullable<Extract<Provider, { kind: "official" }>["advanced"]>;
+  onChange: (value: NonNullable<Extract<Provider, { kind: "official" }>["advanced"]>) => void;
   errors: Record<string, string>;
   t: ReturnType<typeof createTranslator>;
 }) {
   return (
-    <div className="editor-grid grid grid-cols-2 gap-4">
-      <Field label={t("providerId")} error={fieldError(errors.providerId, t)}>
-        <input value={profile.providerId} onChange={(event) => onChange({ ...profile, providerId: sanitizeProviderId(event.target.value) })} />
-      </Field>
-      <Field label={t("providerName")}>
-        <input value={profile.providerName ?? ""} onChange={(event) => onChange({ ...profile, providerName: event.target.value })} />
-      </Field>
-      <Field label={t("baseUrl")} error={fieldError(errors.baseUrl, t)}>
-        <input value={profile.baseUrl} onChange={(event) => onChange({ ...profile, baseUrl: event.target.value })} />
-      </Field>
-      <Field label={t("apiType")} error={fieldError(errors.api, t)}>
-        <input list="api-presets" value={profile.api} onChange={(event) => onChange({ ...profile, api: event.target.value })} />
-        <datalist id="api-presets">
-          {API_PRESETS.map((preset) => (
-            <option key={preset} value={preset} />
-          ))}
-        </datalist>
-      </Field>
+    <div className="grid gap-4 pt-3">
+      <div className="editor-grid grid grid-cols-2 gap-4">
+        <Field label={t("baseUrl")}>
+          <input value={value.baseUrl ?? ""} onChange={(event) => onChange({ ...value, baseUrl: event.target.value })} />
+        </Field>
+        <ApiSelect value={value.api ?? ""} onChange={(api) => onChange({ ...value, api })} label={t("apiType")} />
+      </div>
+      <LabeledField label={t("providerApiKeyOverride")} field="apiKey" help={t("providerApiKeyOverrideHelp")}>
+        <input value={value.apiKey ?? ""} onChange={(event) => onChange({ ...value, apiKey: event.target.value })} />
+      </LabeledField>
+      <Checkbox checked={value.authHeader ?? false} onChange={(authHeader) => onChange({ ...value, authHeader })} label={t("authHeader")} help={t("authHeaderHelp")} />
+      <HeadersEditor value={value.headers ?? []} onChange={(headers) => onChange({ ...value, headers })} error={fieldError(errors.headers, t)} t={t} />
+      <CompatForm value={value.compat ?? {}} onChange={(compat) => onChange({ ...value, compat })} t={t} />
     </div>
   );
 }
 
-function ModelRow({
-  model,
-  profile,
+function OfficialModelSelector({
+  provider,
+  piModels,
+  loading,
+  search,
+  onSearch,
+  onToggle,
+  onEdit,
+  onRemove,
+  t,
+}: {
+  provider: Extract<Provider, { kind: "official" }>;
+  piModels: PiModelInfo[];
+  loading: boolean;
+  search: string;
+  onSearch: (value: string) => void;
+  onToggle: (modelId: string, checked: boolean) => void;
+  onEdit: (model: ModelConfig, index: number) => void;
+  onRemove: (model: ModelConfig) => void;
+  t: ReturnType<typeof createTranslator>;
+}) {
+  const providerModels = piModels.filter((model) => model.provider === provider.providerId);
+  const remoteIds = new Set(providerModels.map((model) => model.id));
+  const localOnlyModels = provider.models.filter((model) => !remoteIds.has(model.id));
+  const enabled = new Set(provider.models.map((model) => model.id));
+  const filtered = providerModels.filter((model) => model.id.toLowerCase().includes(search.toLowerCase()));
+  return (
+    <section className="grid gap-3 rounded-md border p-3" style={{ borderColor: "var(--border)", background: "var(--surface)" }}>
+      <div className="editor-grid grid grid-cols-[minmax(0,1fr)_auto] gap-2">
+        <input value={search} placeholder={t("searchModels")} onChange={(event) => onSearch(event.target.value)} />
+        <span className="muted self-center">{loading ? t("running") : `${filtered.length}/${providerModels.length}`}</span>
+      </div>
+      <div className="model-list">
+        {!loading && providerModels.length === 0 ? (
+          <div className="empty-state">{t("noAvailablePiModels")}</div>
+        ) : null}
+        {filtered.map((model) => {
+          const localIndex = provider.models.findIndex((item) => item.id === model.id);
+          const local = provider.models[localIndex] ?? { ...createModel(model.id), source: "builtin" as const };
+          return (
+            <div key={model.id} className="model-row">
+              <label className="model-check">
+                <input className="w-auto" type="checkbox" checked={enabled.has(model.id)} onChange={(event) => onToggle(model.id, event.target.checked)} />
+                <span className="model-id">{model.id}</span>
+              </label>
+              <span className="model-meta">{model.context} / {model.maxOut} / {model.thinking ? t("thinking") : t("noThinking")} / {model.images ? t("images") : t("textOnly")}</span>
+              <button type="button" className="icon-button" title={t("edit")} onClick={() => onEdit(local, localIndex >= 0 ? localIndex : provider.models.length)} disabled={!enabled.has(model.id)}>
+                <Settings2 size={15} />
+              </button>
+            </div>
+          );
+        })}
+        {localOnlyModels.map((model) => {
+          const index = provider.models.findIndex((item) => item.id === model.id);
+          return (
+            <div key={model.id} className="model-row">
+              <label className="model-check">
+                <input className="w-auto" type="checkbox" checked onChange={(event) => !event.target.checked && onRemove(model)} />
+                <span className="model-id">{model.id}</span>
+              </label>
+              <span className="model-meta">{t("manualModel")}</span>
+              <button type="button" className="icon-button" title={t("edit")} onClick={() => onEdit(model, index)}>
+                <Settings2 size={15} />
+              </button>
+            </div>
+          );
+        })}
+      </div>
+    </section>
+  );
+}
+
+function CustomModelSelector({
+  provider,
+  candidateModels,
+  selectedCandidates,
+  search,
+  fetching,
+  onSearch,
+  onSelect,
+  onAddSelected,
+  onEdit,
+  onRemove,
+  t,
+}: {
+  provider: Extract<Provider, { kind: "custom" }>;
+  candidateModels: string[];
+  selectedCandidates: Set<string>;
+  search: string;
+  fetching: boolean;
+  onSearch: (value: string) => void;
+  onSelect: (value: Set<string>) => void;
+  onAddSelected: () => void;
+  onEdit: (model: ModelConfig, index: number) => void;
+  onRemove: (model: ModelConfig) => void;
+  t: ReturnType<typeof createTranslator>;
+}) {
+  return (
+    <div className="grid gap-3">
+      {(candidateModels.length > 0 || fetching) ? (
+        <section className="grid gap-3 rounded-md border p-3" style={{ borderColor: "var(--border)", background: "var(--surface)" }}>
+          <input value={search} placeholder={t("searchModels")} onChange={(event) => onSearch(event.target.value)} />
+          <div className="grid max-h-56 gap-2 overflow-auto">
+            {candidateModels
+              .filter((model) => model.toLowerCase().includes(search.toLowerCase()))
+              .map((model) => (
+                <label key={model} className="flex items-center gap-2 rounded-md border px-2 py-2" style={{ borderColor: "var(--border)" }}>
+                  <input
+                    className="w-auto"
+                    type="checkbox"
+                    checked={selectedCandidates.has(model)}
+                    onChange={(event) => {
+                      const next = new Set(selectedCandidates);
+                      if (event.target.checked) next.add(model);
+                      else next.delete(model);
+                      onSelect(next);
+                    }}
+                  />
+                  <span className="model-id">{model}</span>
+                </label>
+              ))}
+          </div>
+          <button type="button" onClick={onAddSelected} disabled={selectedCandidates.size === 0}>
+            {t("addSelected")}
+          </button>
+        </section>
+      ) : null}
+      <section className="grid gap-2 rounded-md border p-3" style={{ borderColor: "var(--border)", background: "var(--surface)" }}>
+        <SectionTitle>{t("enabledModels")}</SectionTitle>
+        {provider.models.map((model, index) => (
+          <div key={model.id} className="model-row">
+            <span className="model-id">{model.id}</span>
+            <span className="model-meta">{model.name || model.api || ""}</span>
+            <button type="button" className="icon-button" title={t("edit")} onClick={() => onEdit(model, index)}>
+              <Settings2 size={15} />
+            </button>
+            <button type="button" className="danger" onClick={() => onRemove(model)}>
+              {t("remove")}
+            </button>
+          </div>
+        ))}
+      </section>
+    </div>
+  );
+}
+
+function ModelConfigForm({
+  draft,
+  providerKind,
   onChange,
   t,
 }: {
-  model: ModelEntry;
-  profile: Profile;
-  onChange: (profile: Profile) => void;
+  draft: ModelConfig;
+  providerKind: Provider["kind"];
+  onChange: (model: ModelConfig) => void;
   t: ReturnType<typeof createTranslator>;
 }) {
-  function removeModel() {
-    const models = profile.models.filter((item) => item.id !== model.id);
-    onChange({
-      ...profile,
-      models,
-      defaultModelId: profile.defaultModelId === model.id ? models[0]?.id ?? "" : profile.defaultModelId,
-    });
-  }
-
+  const updateModel = (model: ModelConfig) => {
+    onChange(providerKind === "custom" ? { ...model, overrideBuiltIn: false } : model);
+  };
   return (
-    <div className="model-row">
-      <span className="model-id">{model.id}</span>
-      <button type="button" onClick={() => onChange({ ...profile, defaultModelId: model.id })}>
-        {profile.defaultModelId === model.id ? t("defaultModel") : t("setDefault")}
-      </button>
-      <button type="button" onClick={removeModel}>
-        {t("remove")}
-      </button>
+    <div className="grid gap-4">
+      <h3 className="m-0 text-base font-semibold">{t("modelConfig")}</h3>
+      <div className="editor-grid grid grid-cols-2 gap-4">
+        <Field label={t("modelId")} required>
+          <input value={draft.id} onChange={(event) => updateModel({ ...draft, id: event.target.value })} />
+        </Field>
+        <Field label={t("modelName")}>
+          <input value={draft.name ?? ""} onChange={(event) => updateModel({ ...draft, name: event.target.value })} />
+        </Field>
+        <ApiSelect value={draft.api ?? ""} onChange={(api) => updateModel({ ...draft, api })} label={t("apiType")} />
+        <Field label={t("source")}>
+          <select value={draft.source ?? "custom"} onChange={(event) => updateModel({ ...draft, source: event.target.value as ModelConfig["source"] })}>
+            <option value="custom">{t("customModel")}</option>
+            <option value="builtin">{t("builtinModel")}</option>
+          </select>
+        </Field>
+      </div>
+      <div className="editor-grid grid grid-cols-2 gap-4">
+        <Checkbox checked={draft.reasoning ?? false} onChange={(reasoning) => updateModel({ ...draft, reasoning })} label={t("reasoning")} />
+        {providerKind === "official" ? (
+          <Checkbox checked={draft.overrideBuiltIn ?? false} onChange={(overrideBuiltIn) => updateModel({ ...draft, overrideBuiltIn })} label={t("overrideBuiltIn")} help={t("overrideBuiltInHelp")} />
+        ) : null}
+        <Checkbox checked={(draft.input ?? ["text"]).includes("image")} onChange={(checked) => updateModel({ ...draft, input: checked ? ["text", "image"] : ["text"] })} label={t("imageInput")} />
+      </div>
+      <div className="editor-grid grid grid-cols-2 gap-4">
+        <NumberField label={t("contextWindow")} value={draft.contextWindow} onChange={(contextWindow) => updateModel({ ...draft, contextWindow })} />
+        <NumberField label={t("maxTokens")} value={draft.maxTokens} onChange={(maxTokens) => updateModel({ ...draft, maxTokens })} />
+      </div>
+      <details className="advanced-panel">
+        <summary><SummaryHelp label={t("cost")} help={t("costHelp")} /></summary>
+        <div className="editor-grid grid grid-cols-4 gap-3 pt-3">
+          <NumberField label={t("costInput")} field="cost.input" value={draft.cost?.input} onChange={(input) => updateModel({ ...draft, cost: { ...draft.cost, input } })} />
+          <NumberField label={t("costOutput")} field="cost.output" value={draft.cost?.output} onChange={(output) => updateModel({ ...draft, cost: { ...draft.cost, output } })} />
+          <NumberField label={t("costCacheRead")} field="cost.cacheRead" value={draft.cost?.cacheRead} onChange={(cacheRead) => updateModel({ ...draft, cost: { ...draft.cost, cacheRead } })} />
+          <NumberField label={t("costCacheWrite")} field="cost.cacheWrite" value={draft.cost?.cacheWrite} onChange={(cacheWrite) => updateModel({ ...draft, cost: { ...draft.cost, cacheWrite } })} />
+        </div>
+      </details>
+      <details className="advanced-panel">
+        <summary><SummaryHelp label={t("modelOverrides")} help={t("modelOverridesHelp")} /></summary>
+        <div className="grid gap-4 pt-3">
+          <HeadersEditor value={draft.headers ?? []} onChange={(headers) => updateModel({ ...draft, headers })} t={t} />
+          <ThinkingLevelMapEditor value={draft.thinkingLevelMap ?? {}} onChange={(thinkingLevelMap) => updateModel({ ...draft, thinkingLevelMap })} t={t} />
+          <CompatForm value={draft.compat ?? {}} onChange={(compat) => updateModel({ ...draft, compat })} t={t} />
+        </div>
+      </details>
     </div>
   );
 }
 
-function profileProviderLabel(profile: Profile) {
-  if (profile.kind === "official") return OFFICIAL_PROVIDER_LABELS[profile.providerId];
-  return sanitizeProviderId(profile.providerId);
+function ApiSelect({ value, onChange, label, error, required }: { value: string; onChange: (value: string) => void; label: string; error?: string; required?: boolean }) {
+  return (
+    <Field label={label} error={error} required={required}>
+      <input list="api-presets" value={value} onChange={(event) => onChange(event.target.value)} />
+      <datalist id="api-presets">
+        {API_PRESETS.map((preset) => (
+          <option key={preset} value={preset} />
+        ))}
+      </datalist>
+    </Field>
+  );
+}
+
+function Checkbox({ checked, onChange, label, help }: { checked: boolean; onChange: (checked: boolean) => void; label: string; help?: string }) {
+  return (
+    <label className="checkbox-row">
+      <input className="w-auto" type="checkbox" checked={checked} onChange={(event) => onChange(event.target.checked)} />
+      <span>{label}{help ? <InlineHelp help={help} /> : null}</span>
+    </label>
+  );
+}
+
+function NumberField({ label, field, value, onChange }: { label: string; field?: string; value?: number; onChange: (value: number | undefined) => void }) {
+  return (
+    <LabeledField label={label} field={field}>
+      <input type="number" min="0" value={value ?? ""} onChange={(event) => onChange(event.target.value === "" ? undefined : Number(event.target.value))} />
+    </LabeledField>
+  );
+}
+
+function HeadersEditor({
+  value,
+  onChange,
+  error,
+  t,
+}: {
+  value: HeaderEntry[];
+  onChange: (value: HeaderEntry[]) => void;
+  error?: string;
+  t: ReturnType<typeof createTranslator>;
+}) {
+  return (
+    <section className="grid gap-2">
+      <div className="flex items-center justify-between gap-2">
+        <SectionTitle>{t("headers")}</SectionTitle>
+        <button type="button" onClick={() => onChange([...value, { key: "", value: "" }])}>
+          {t("addHeader")}
+        </button>
+      </div>
+      {error ? <div className="field-error">{error}</div> : null}
+      {value.map((header, index) => (
+        <div key={index} className="editor-grid grid grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto] gap-2">
+          <input value={header.key} placeholder="header" onChange={(event) => onChange(value.map((item, itemIndex) => itemIndex === index ? { ...item, key: event.target.value } : item))} />
+          <input value={header.value} placeholder="value" onChange={(event) => onChange(value.map((item, itemIndex) => itemIndex === index ? { ...item, value: event.target.value } : item))} />
+          <button type="button" className="danger" onClick={() => onChange(value.filter((_, itemIndex) => itemIndex !== index))}>
+            {t("remove")}
+          </button>
+        </div>
+      ))}
+    </section>
+  );
+}
+
+function ThinkingLevelMapEditor({
+  value,
+  onChange,
+  t,
+}: {
+  value: ModelConfig["thinkingLevelMap"];
+  onChange: (value: ModelConfig["thinkingLevelMap"]) => void;
+  t: ReturnType<typeof createTranslator>;
+}) {
+  return (
+    <details className="advanced-panel">
+      <summary><SummaryHelp label={t("thinkingLevelMap")} help={t("thinkingLevelMapHelp")} /></summary>
+      <div className="grid gap-2 pt-3">
+        {THINKING_LEVELS.map((level) => (
+          <div key={level} className="editor-grid grid grid-cols-[120px_150px_minmax(0,1fr)] gap-2">
+            <span className="self-center model-id">{level}</span>
+            <select
+              value={value?.[level] === undefined ? "default" : value[level] === null ? "unsupported" : "custom"}
+              onChange={(event) => {
+                const next = { ...(value ?? {}) };
+                if (event.target.value === "default") delete next[level];
+                if (event.target.value === "unsupported") next[level] = null;
+                if (event.target.value === "custom") next[level] = "";
+                onChange(next);
+              }}
+            >
+              <option value="default">{t("defaultValue")}</option>
+              <option value="unsupported">{t("unsupported")}</option>
+              <option value="custom">{t("customValue")}</option>
+            </select>
+            <input
+              value={typeof value?.[level] === "string" ? value[level] ?? "" : ""}
+              disabled={typeof value?.[level] !== "string"}
+              onChange={(event) => onChange({ ...(value ?? {}), [level]: event.target.value })}
+            />
+          </div>
+        ))}
+      </div>
+    </details>
+  );
+}
+
+function CompatForm({ value, onChange, t }: { value: CompatConfig; onChange: (value: CompatConfig) => void; t: ReturnType<typeof createTranslator> }) {
+  return (
+    <details className="advanced-panel">
+      <summary><SummaryHelp label={t("compat")} help={t("compatHelp")} /></summary>
+      <div className="grid gap-4 pt-3">
+        <div className="editor-grid grid grid-cols-3 gap-3">
+          <TriStateBool label={t("compatSupportsStore")} field="supportsStore" help={t("compatSupportsStoreHelp")} value={value.supportsStore} onChange={(supportsStore) => onChange({ ...value, supportsStore })} />
+          <TriStateBool label={t("compatDeveloperRole")} field="supportsDeveloperRole" help={t("compatDeveloperRoleHelp")} value={value.supportsDeveloperRole} onChange={(supportsDeveloperRole) => onChange({ ...value, supportsDeveloperRole })} />
+          <TriStateBool label={t("compatReasoningEffort")} field="supportsReasoningEffort" help={t("compatReasoningEffortHelp")} value={value.supportsReasoningEffort} onChange={(supportsReasoningEffort) => onChange({ ...value, supportsReasoningEffort })} />
+          <TriStateBool label={t("compatUsageStreaming")} field="supportsUsageInStreaming" help={t("compatUsageStreamingHelp")} value={value.supportsUsageInStreaming} onChange={(supportsUsageInStreaming) => onChange({ ...value, supportsUsageInStreaming })} />
+          <TriStateBool label={t("compatToolResultName")} field="requiresToolResultName" help={t("compatToolResultNameHelp")} value={value.requiresToolResultName} onChange={(requiresToolResultName) => onChange({ ...value, requiresToolResultName })} />
+          <TriStateBool label={t("compatAssistantAfterTool")} field="requiresAssistantAfterToolResult" help={t("compatAssistantAfterToolHelp")} value={value.requiresAssistantAfterToolResult} onChange={(requiresAssistantAfterToolResult) => onChange({ ...value, requiresAssistantAfterToolResult })} />
+          <TriStateBool label={t("compatThinkingAsText")} field="requiresThinkingAsText" help={t("compatThinkingAsTextHelp")} value={value.requiresThinkingAsText} onChange={(requiresThinkingAsText) => onChange({ ...value, requiresThinkingAsText })} />
+          <TriStateBool label={t("compatReasoningContent")} field="requiresReasoningContentOnAssistantMessages" help={t("compatReasoningContentHelp")} value={value.requiresReasoningContentOnAssistantMessages} onChange={(requiresReasoningContentOnAssistantMessages) => onChange({ ...value, requiresReasoningContentOnAssistantMessages })} />
+          <TriStateBool label={t("compatZaiToolStream")} field="zaiToolStream" help={t("compatZaiToolStreamHelp")} value={value.zaiToolStream} onChange={(zaiToolStream) => onChange({ ...value, zaiToolStream })} />
+          <TriStateBool label={t("compatStrictMode")} field="supportsStrictMode" help={t("compatStrictModeHelp")} value={value.supportsStrictMode} onChange={(supportsStrictMode) => onChange({ ...value, supportsStrictMode })} />
+          <TriStateBool label={t("compatSessionAffinity")} field="sendSessionAffinityHeaders" help={t("compatSessionAffinityHelp")} value={value.sendSessionAffinityHeaders} onChange={(sendSessionAffinityHeaders) => onChange({ ...value, sendSessionAffinityHeaders })} />
+          <TriStateBool label={t("compatLongCache")} field="supportsLongCacheRetention" help={t("compatLongCacheHelp")} value={value.supportsLongCacheRetention} onChange={(supportsLongCacheRetention) => onChange({ ...value, supportsLongCacheRetention })} />
+          <TriStateBool label={t("compatSessionId")} field="sendSessionIdHeader" help={t("compatSessionIdHelp")} value={value.sendSessionIdHeader} onChange={(sendSessionIdHeader) => onChange({ ...value, sendSessionIdHeader })} />
+          <TriStateBool label={t("compatEagerToolInput")} field="supportsEagerToolInputStreaming" help={t("compatEagerToolInputHelp")} value={value.supportsEagerToolInputStreaming} onChange={(supportsEagerToolInputStreaming) => onChange({ ...value, supportsEagerToolInputStreaming })} />
+          <TriStateBool label={t("compatCacheControlTools")} field="supportsCacheControlOnTools" help={t("compatCacheControlToolsHelp")} value={value.supportsCacheControlOnTools} onChange={(supportsCacheControlOnTools) => onChange({ ...value, supportsCacheControlOnTools })} />
+          <TriStateBool label={t("compatTemperature")} field="supportsTemperature" help={t("compatTemperatureHelp")} value={value.supportsTemperature} onChange={(supportsTemperature) => onChange({ ...value, supportsTemperature })} />
+          <TriStateBool label={t("compatAdaptiveThinking")} field="forceAdaptiveThinking" help={t("compatAdaptiveThinkingHelp")} value={value.forceAdaptiveThinking} onChange={(forceAdaptiveThinking) => onChange({ ...value, forceAdaptiveThinking })} />
+          <TriStateBool label={t("compatEmptySignature")} field="allowEmptySignature" help={t("compatEmptySignatureHelp")} value={value.allowEmptySignature} onChange={(allowEmptySignature) => onChange({ ...value, allowEmptySignature })} />
+        </div>
+        <div className="editor-grid grid grid-cols-3 gap-3">
+          <LabeledField label={t("compatMaxTokensField")} field="maxTokensField" help={t("compatMaxTokensFieldHelp")}>
+            <select value={value.maxTokensField ?? ""} onChange={(event) => onChange({ ...value, maxTokensField: event.target.value as CompatConfig["maxTokensField"] })}>
+              <option value="">{t("defaultValue")}</option>
+              <option value="max_completion_tokens">max_completion_tokens</option>
+              <option value="max_tokens">max_tokens</option>
+            </select>
+          </LabeledField>
+          <LabeledField label={t("compatThinkingFormat")} field="thinkingFormat" help={t("compatThinkingFormatHelp")}>
+            <input value={value.thinkingFormat ?? ""} onChange={(event) => onChange({ ...value, thinkingFormat: event.target.value as CompatConfig["thinkingFormat"] })} />
+          </LabeledField>
+          <LabeledField label={t("compatCacheControlFormat")} field="cacheControlFormat" help={t("compatCacheControlFormatHelp")}>
+            <select value={value.cacheControlFormat ?? ""} onChange={(event) => onChange({ ...value, cacheControlFormat: event.target.value as CompatConfig["cacheControlFormat"] })}>
+              <option value="">{t("defaultValue")}</option>
+              <option value="anthropic">anthropic</option>
+            </select>
+          </LabeledField>
+        </div>
+        <RoutingForm value={value} onChange={onChange} t={t} />
+      </div>
+    </details>
+  );
+}
+
+function TriStateBool({ label, field, help, value, onChange }: { label: string; field?: string; help?: string; value?: boolean; onChange: (value: boolean | undefined) => void }) {
+  return (
+    <LabeledField label={label} field={field} help={help}>
+      <select value={value === undefined ? "" : value ? "true" : "false"} onChange={(event) => onChange(event.target.value === "" ? undefined : event.target.value === "true")}>
+        <option value="">default</option>
+        <option value="true">true</option>
+        <option value="false">false</option>
+      </select>
+    </LabeledField>
+  );
+}
+
+function RoutingForm({ value, onChange, t }: { value: CompatConfig; onChange: (value: CompatConfig) => void; t: ReturnType<typeof createTranslator> }) {
+  const openRouterRouting = value.openRouterRouting ?? {};
+  const vercelGatewayRouting = value.vercelGatewayRouting ?? {};
+  return (
+    <details className="advanced-panel">
+      <summary><SummaryHelp label={t("routing")} help={t("routingHelp")} /></summary>
+      <div className="grid gap-4 pt-3">
+        <SectionTitle>OpenRouter</SectionTitle>
+        <div className="editor-grid grid grid-cols-3 gap-3">
+          <TriStateBool label={t("routeFallbacks")} field="allow_fallbacks" help={t("routeFallbacksHelp")} value={openRouterRouting.allow_fallbacks} onChange={(allow_fallbacks) => onChange({ ...value, openRouterRouting: { ...openRouterRouting, allow_fallbacks } })} />
+          <TriStateBool label={t("routeRequireParameters")} field="require_parameters" help={t("routeRequireParametersHelp")} value={openRouterRouting.require_parameters} onChange={(require_parameters) => onChange({ ...value, openRouterRouting: { ...openRouterRouting, require_parameters } })} />
+          <TriStateBool label={t("routeZdr")} field="zdr" help={t("routeZdrHelp")} value={openRouterRouting.zdr} onChange={(zdr) => onChange({ ...value, openRouterRouting: { ...openRouterRouting, zdr } })} />
+          <TriStateBool label={t("routeDistillable")} field="enforce_distillable_text" help={t("routeDistillableHelp")} value={openRouterRouting.enforce_distillable_text} onChange={(enforce_distillable_text) => onChange({ ...value, openRouterRouting: { ...openRouterRouting, enforce_distillable_text } })} />
+          <LabeledField label={t("routeDataCollection")} field="data_collection" help={t("routeDataCollectionHelp")}>
+            <select value={openRouterRouting.data_collection ?? ""} onChange={(event) => onChange({ ...value, openRouterRouting: { ...openRouterRouting, data_collection: event.target.value as "allow" | "deny" | "" } })}>
+              <option value="">{t("defaultValue")}</option>
+              <option value="allow">allow</option>
+              <option value="deny">deny</option>
+            </select>
+          </LabeledField>
+          <LabeledField label={t("routeSort")} field="sort.by" help={t("routeSortHelp")}>
+            <input value={openRouterRouting.sortBy ?? ""} onChange={(event) => onChange({ ...value, openRouterRouting: { ...openRouterRouting, sortBy: event.target.value } })} />
+          </LabeledField>
+        </div>
+        <div className="editor-grid grid grid-cols-3 gap-3">
+          <StringListField label={t("routeOrder")} field="order" help={t("routeOrderHelp")} value={openRouterRouting.order ?? []} onChange={(order) => onChange({ ...value, openRouterRouting: { ...openRouterRouting, order } })} />
+          <StringListField label={t("routeOnly")} field="only" help={t("routeOnlyHelp")} value={openRouterRouting.only ?? []} onChange={(only) => onChange({ ...value, openRouterRouting: { ...openRouterRouting, only } })} />
+          <StringListField label={t("routeIgnore")} field="ignore" help={t("routeIgnoreHelp")} value={openRouterRouting.ignore ?? []} onChange={(ignore) => onChange({ ...value, openRouterRouting: { ...openRouterRouting, ignore } })} />
+          <StringListField label={t("routeQuantizations")} field="quantizations" help={t("routeQuantizationsHelp")} value={openRouterRouting.quantizations ?? []} onChange={(quantizations) => onChange({ ...value, openRouterRouting: { ...openRouterRouting, quantizations } })} />
+        </div>
+        <SectionTitle>Vercel AI Gateway</SectionTitle>
+        <div className="editor-grid grid grid-cols-2 gap-3">
+          <StringListField label={t("routeOnly")} field="only" help={t("routeOnlyHelp")} value={vercelGatewayRouting.only ?? []} onChange={(only) => onChange({ ...value, vercelGatewayRouting: { ...vercelGatewayRouting, only } })} />
+          <StringListField label={t("routeOrder")} field="order" help={t("routeOrderHelp")} value={vercelGatewayRouting.order ?? []} onChange={(order) => onChange({ ...value, vercelGatewayRouting: { ...vercelGatewayRouting, order } })} />
+        </div>
+      </div>
+    </details>
+  );
+}
+
+function StringListField({ label, field, help, value, onChange }: { label: string; field?: string; help?: string; value: string[]; onChange: (value: string[]) => void }) {
+  return (
+    <LabeledField label={label} field={field} help={help}>
+      <input value={value.join(", ")} onChange={(event) => onChange(event.target.value.split(",").map((item) => item.trim()).filter(Boolean))} />
+    </LabeledField>
+  );
+}
+
+function providerLabel(provider: Provider) {
+  if (provider.kind === "official") return OFFICIAL_PROVIDER_LABELS[provider.providerId] ?? provider.providerId;
+  return piProviderId(provider);
 }
 
 function fieldError(code: string | undefined, t: ReturnType<typeof createTranslator>) {
@@ -551,17 +1226,52 @@ function fieldError(code: string | undefined, t: ReturnType<typeof createTransla
   if (code === "MODEL_REQUIRED") return t("modelRequired");
   if (code === "DEFAULT_MODEL_MISSING") return t("defaultModelMissing");
   if (code === "RESERVED") return t("reservedProvider");
+  if (code === "DUPLICATE_MODEL") return t("duplicateModel");
+  if (code === "MODEL_ID_REQUIRED") return t("modelIdRequired");
+  if (code === "INVALID_NUMBER") return t("invalidNumber");
+  if (code === "INVALID_HEADER") return t("invalidHeader");
   return code;
+}
+
+function withValidDefaultModel<T extends Provider>(provider: T): T {
+  const enabled = enabledModels(provider);
+  const defaultModelId = enabled.some((model) => model.id === provider.defaultModelId)
+    ? provider.defaultModelId
+    : enabled[0]?.id ?? "";
+  return { ...provider, defaultModelId };
+}
+
+function normalizeModelDraft(model: ModelConfig): ModelConfig {
+  return {
+    ...model,
+    id: model.id.trim(),
+    name: emptyToUndefined(model.name),
+    api: emptyToUndefined(model.api),
+    headers: (model.headers ?? []).filter((header) => header.key.trim()),
+  };
+}
+
+function emptyToUndefined<T extends string>(value: T | undefined) {
+  const trimmed = value?.trim();
+  return trimmed ? (trimmed as T) : undefined;
 }
 
 function formatError(err: unknown, t: ReturnType<typeof createTranslator>) {
   const error = err as AppError;
+  if (isPiCommandMissing(error)) {
+    return `${t("piMissingTitle")}\n${t("piMissingShort")}`;
+  }
   const parts = [error.message ?? String(err)];
   if (error.details) parts.push(error.details);
   if (error.failedFile) parts.push(`${t("failedFile")}: ${error.failedFile}`);
   if (error.writtenFiles?.length) parts.push(`${t("writtenFiles")}: ${error.writtenFiles.join(", ")}`);
   if (error.failedFile) parts.push(t("applyFailureHint"));
   return parts.filter(Boolean).join("\n");
+}
+
+function isPiCommandMissing(error: unknown) {
+  const code = (error as AppError | undefined)?.code;
+  return code === "PI_COMMAND_NOT_FOUND" || code === "NODE_COMMAND_NOT_FOUND";
 }
 
 export default App;

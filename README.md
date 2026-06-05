@@ -2,15 +2,15 @@
 
 Pi Switch is a Tauri + React + TypeScript desktop configuration console for Pi Coding Agent.
 
-The MVP manages Profiles for official providers and custom relay providers, then applies one active Profile to Pi global configuration.
+The MVP manages providers for official APIs and custom relay endpoints, then applies one active provider to Pi global configuration.
 
 ## Features
 
-- Profile create, duplicate, delete and edit.
+- Provider create, duplicate, delete and edit.
 - Official providers: OpenAI, Anthropic, Google Gemini, OpenRouter, Groq, Mistral, xAI.
-- Custom providers with provider ID, display name, base URL, API type, API key and model list.
+- Custom providers with name, base URL, API type, API key and model list.
 - Save GUI config to `~\PiSwitch\config.json`.
-- Apply the active Profile to:
+- Apply the active provider to:
   - `~\.pi\agent\models.json`
   - `~\.pi\agent\auth.json`
   - `~\.pi\agent\settings.json`
