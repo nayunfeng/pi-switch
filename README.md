@@ -22,14 +22,22 @@ The MVP manages providers for official APIs and custom relay endpoints, then app
 
 ## Development
 
-```powershell
+```bash
 npm install
 npm run tauri dev
 ```
 
+On WSLg, WebKitGTK can fail to present the window with Mesa/Zink EGL errors while
+the taskbar icon is still visible. Pi Switch automatically enables software GL in
+WSL. If you need to run the backend manually, use:
+
+```bash
+LIBGL_ALWAYS_SOFTWARE=1 WEBKIT_DISABLE_DMABUF_RENDERER=1 cargo run --manifest-path src-tauri/Cargo.toml --no-default-features
+```
+
 ## Validation
 
-```powershell
+```bash
 npm run build
 cd src-tauri
 cargo test
@@ -40,7 +48,7 @@ npm run tauri build
 Release bundles are generated under:
 
 ```text
-src-tauri\target\release\bundle\
+src-tauri/target/release/bundle/
 ```
 
 ## Specs

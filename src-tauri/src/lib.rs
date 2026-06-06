@@ -61,6 +61,37 @@ const OFFICIAL_PROVIDER_IDS: &[&str] = &[
     "xiaomi-token-plan-sgp",
 ];
 
+#[cfg(target_os = "linux")]
+fn configure_linux_webview_environment() {
+    if !is_wsl_environment() {
+        return;
+    }
+
+    set_env_if_unset("LIBGL_ALWAYS_SOFTWARE", "1");
+    set_env_if_unset("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
+}
+
+#[cfg(target_os = "linux")]
+fn is_wsl_environment() -> bool {
+    if std::env::var_os("WSL_DISTRO_NAME").is_some() || std::env::var_os("WSL_INTEROP").is_some() {
+        return true;
+    }
+
+    fs::read_to_string("/proc/version")
+        .map(|version| {
+            let version = version.to_ascii_lowercase();
+            version.contains("microsoft") || version.contains("wsl")
+        })
+        .unwrap_or(false)
+}
+
+#[cfg(target_os = "linux")]
+fn set_env_if_unset(key: &str, value: &str) {
+    if std::env::var_os(key).is_none() {
+        std::env::set_var(key, value);
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AppConfig {
@@ -3456,6 +3487,9 @@ fn format_token_count(count: u64) -> String {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    #[cfg(target_os = "linux")]
+    configure_linux_webview_environment();
+
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .manage(OAuthLoginSessions::default())
