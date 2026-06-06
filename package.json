@@ -7,6 +7,7 @@
     "dev": "vite",
     "build": "tsc && vite build",
     "preview": "vite preview",
+    "test:auth": "node --test scripts/*.test.mjs",
     "audit:auth": "node scripts/audit-auth-state.mjs",
     "verify:codex-accounts": "node scripts/verify-codex-accounts.mjs",
     "tauri": "tauri"
