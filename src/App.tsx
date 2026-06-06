@@ -248,16 +248,25 @@ function App() {
   }
 
   async function bindActiveProviderToAccount(account: AuthAccount) {
-    if (activeProvider?.kind !== "official" || activeProvider.providerId !== account.providerId) {
-      return;
-    }
+    const matchingProvider =
+      activeProvider?.kind === "official" && activeProvider.providerId === account.providerId
+        ? activeProvider
+        : config.providers.find((provider) => provider.kind === "official" && provider.providerId === account.providerId);
+    const provider =
+      matchingProvider ??
+      ({
+        ...createOfficialProvider(),
+        name: OFFICIAL_PROVIDER_LABELS[account.providerId],
+        providerId: account.providerId,
+      } satisfies Extract<Provider, { kind: "official" }>);
+    const boundProvider = { ...provider, authMode: "account" as const, authAccountId: account.id, apiKey: "" };
+    const providers = matchingProvider
+      ? config.providers.map((item) => (item.id === provider.id ? boundProvider : item))
+      : [...config.providers, boundProvider];
     const nextConfig = {
       ...config,
-      providers: config.providers.map((provider) =>
-        provider.id === activeProvider.id
-          ? { ...activeProvider, authMode: "account" as const, authAccountId: account.id, apiKey: "" }
-          : provider,
-      ),
+      activeProviderId: boundProvider.id,
+      providers,
     };
     updateConfig(nextConfig);
     await saveAppConfig(nextConfig);
