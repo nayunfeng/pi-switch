@@ -118,6 +118,15 @@ function App() {
   const modelDialogRef = useRef<HTMLDialogElement>(null);
   const providerAdvancedDialogRef = useRef<HTMLDialogElement>(null);
   const outputDialogRef = useRef<HTMLDialogElement>(null);
+  const renameDialogRef = useRef<HTMLDialogElement>(null);
+  const deleteAccountDialogRef = useRef<HTMLDialogElement>(null);
+  const oauthManualCodeDialogRef = useRef<HTMLDialogElement>(null);
+  const [renameTarget, setRenameTarget] = useState<AuthAccount>();
+  const [renameLabel, setRenameLabel] = useState("");
+  const [deleteAccountTarget, setDeleteAccountTarget] = useState<AuthAccount>();
+  const [oauthManualCodeState, setOAuthManualCodeState] = useState<{ loginId: string; message: string }>();
+  const [oauthManualCodeInput, setOAuthManualCodeInput] = useState("");
+  const [providerBusy, setProviderBusy] = useState(false);
   const openedOAuthUrlsRef = useRef<Set<string>>(new Set());
   const openedEmptyAccountsRef = useRef(false);
   const language = config.language ?? systemLanguage();
@@ -168,10 +177,9 @@ function App() {
         openUrl(urlToOpen).catch((err) => showError(err));
       }
       if (event.payload.type === "manualCode") {
-        const code = window.prompt(event.payload.message ?? t("oauthManualCodePrompt"))?.trim();
-        if (code) {
-          submitOAuthManualCode(event.payload.loginId, code).catch((err) => showError(err));
-        }
+        setOAuthManualCodeInput("");
+        setOAuthManualCodeState({ loginId: event.payload.loginId, message: event.payload.message ?? t("oauthManualCodePrompt") });
+        oauthManualCodeDialogRef.current?.showModal();
       }
       setOAuthState((state) => ({
         ...state,
@@ -324,6 +332,7 @@ function App() {
       showToast("error", t("validationFailed"));
       return false;
     }
+    setProviderBusy(true);
     try {
       await saveAppConfig(nextConfig);
       showToast("success", t("saveSuccess"));
@@ -331,6 +340,8 @@ function App() {
     } catch (err) {
       showError(err);
       return false;
+    } finally {
+      setProviderBusy(false);
     }
   }
 
@@ -340,12 +351,15 @@ function App() {
       showToast("error", t("validationFailed"));
       return;
     }
+    setProviderBusy(true);
     try {
       await applyProviderToPi(config, activeProvider.id);
       showToast("success", t("applySuccess"));
       await refreshAccounts();
     } catch (err) {
       showError(err);
+    } finally {
+      setProviderBusy(false);
     }
   }
 
@@ -353,6 +367,7 @@ function App() {
     if (!activeProvider) return;
     const saved = await saveCurrentConfig();
     if (!saved) return;
+    setProviderBusy(true);
     setTestState({ status: "running", output: 'pi -p "ping"\n' });
     try {
       const result = await runTestProvider(config, activeProvider.id);
@@ -366,6 +381,8 @@ function App() {
     } catch (err) {
       setTestState({ status: "failed", output: formatError(err, t) });
       showError(err);
+    } finally {
+      setProviderBusy(false);
     }
   }
 
@@ -511,11 +528,19 @@ function App() {
   }
 
   async function renameSelectedAccount(account: AuthAccount) {
-    const label = window.prompt(t("renameAccount"), account.label)?.trim();
+    setRenameLabel(account.label);
+    setRenameTarget(account);
+    renameDialogRef.current?.showModal();
+  }
+
+  async function commitRename() {
+    if (!renameTarget) return;
+    const label = renameLabel.trim();
     if (!label) return;
+    renameDialogRef.current?.close();
     setAccountBusy(true);
     try {
-      const updated = await renameAuthAccount(account.id, label);
+      const updated = await renameAuthAccount(renameTarget.id, label);
       await refreshAccounts();
       setSelectedAccountId(updated.id);
       showToast("success", t("accountSaved"));
@@ -523,6 +548,7 @@ function App() {
       showError(err);
     } finally {
       setAccountBusy(false);
+      setRenameTarget(undefined);
     }
   }
 
@@ -541,13 +567,16 @@ function App() {
   }
 
   async function deleteSelectedAccount(account: AuthAccount) {
-    const message = account.activeInPi
-      ? `${t("deleteActiveAccountConfirm")} "${account.label}"?`
-      : `${t("deleteAccountConfirm")} "${account.label}"?`;
-    if (!window.confirm(message)) return;
+    setDeleteAccountTarget(account);
+    deleteAccountDialogRef.current?.showModal();
+  }
+
+  async function commitDeleteAccount() {
+    if (!deleteAccountTarget) return;
+    deleteAccountDialogRef.current?.close();
     setAccountBusy(true);
     try {
-      await deleteAuthAccount(account.id);
+      await deleteAuthAccount(deleteAccountTarget.id);
       const loaded = await loadAppConfig();
       setConfig(normalizeConfig(loaded.config));
       setPaths(loaded.resolvedPaths);
@@ -557,6 +586,7 @@ function App() {
       showError(err);
     } finally {
       setAccountBusy(false);
+      setDeleteAccountTarget(undefined);
     }
   }
 
@@ -637,7 +667,12 @@ function App() {
   }
 
   if (loading) {
-    return <div className="grid min-h-screen place-items-center">{t("running")}</div>;
+    return (
+      <div className="grid min-h-screen place-items-center gap-3" style={{ color: "var(--muted)" }}>
+        <span className="spinner" aria-hidden="true" />
+        <span>{t("running")}</span>
+      </div>
+    );
   }
 
   return (
@@ -669,11 +704,11 @@ function App() {
 
       <main className="workspace grid min-h-0 grid-cols-[280px_minmax(0,1fr)]">
         <aside className="min-h-0 border-r p-4" style={{ borderColor: "var(--border)", background: "var(--surface-muted)" }}>
-          <div className="mb-3 grid grid-cols-2 gap-2">
-            <button type="button" className={activeTab === "providers" ? "primary" : ""} onClick={() => setActiveTab("providers")}>
+          <div className="mb-3 grid grid-cols-2 gap-2" role="tablist">
+            <button type="button" role="tab" aria-selected={activeTab === "providers"} className={activeTab === "providers" ? "primary" : ""} onClick={() => setActiveTab("providers")}>
               {t("providers")}
             </button>
-            <button type="button" className={activeTab === "accounts" ? "primary" : ""} onClick={() => setActiveTab("accounts")}>
+            <button type="button" role="tab" aria-selected={activeTab === "accounts"} className={activeTab === "accounts" ? "primary" : ""} onClick={() => setActiveTab("accounts")}>
               {t("accounts")}
             </button>
           </div>
@@ -694,20 +729,29 @@ function App() {
                 </button>
               </div>
               <div className="grid gap-2">
-                {config.providers.map((provider) => (
-                  <button
-                    type="button"
-                    key={provider.id}
-                    className={`provider-item ${provider.id === config.activeProviderId ? "active" : ""}`}
-                    onClick={() => updateConfig({ ...config, activeProviderId: provider.id })}
-                  >
-                    <strong>{provider.name}</strong>
-                    <span className="provider-meta">
-                      {provider.kind === "official" ? t("official") : t("custom")} / {providerLabel(provider)}
-                    </span>
-                    <span className="provider-meta">{provider.defaultModelId || t("noDefaultModel")}</span>
-                  </button>
-                ))}
+                {config.providers.map((provider) => {
+                  const isSelected = provider.id === config.activeProviderId;
+                  const isApplied = provider.kind === "official" && provider.authMode === "account"
+                    ? accounts.some((a) => a.id === provider.authAccountId && a.activeInPi)
+                    : false;
+                  return (
+                    <button
+                      type="button"
+                      key={provider.id}
+                      className={`provider-item ${isSelected ? "active" : ""}`}
+                      onClick={() => updateConfig({ ...config, activeProviderId: provider.id })}
+                    >
+                      <div className="flex items-center justify-between gap-1">
+                        <strong>{provider.name}</strong>
+                        {isApplied ? <span className="rounded-full px-2 py-0.5 text-xs" style={{ background: "var(--accent)", color: "white" }}>Pi</span> : null}
+                      </div>
+                      <span className="provider-meta">
+                        {provider.kind === "official" ? t("official") : t("custom")} / {providerLabel(provider)}
+                      </span>
+                      <span className="provider-meta">{provider.defaultModelId || t("noDefaultModel")}</span>
+                    </button>
+                  );
+                })}
               </div>
             </>
           ) : (
@@ -759,7 +803,14 @@ function App() {
               t={t}
             />
           ) : !activeProvider ? (
-            <div className="grid min-h-[420px] place-items-center muted">{t("noProvider")}</div>
+            <div className="grid min-h-[420px] place-items-center">
+              <div className="grid gap-3 text-center">
+                <p className="muted m-0">{t("noProvider")}</p>
+                <button type="button" className="primary flex items-center justify-center gap-2" onClick={addProvider}>
+                  <Plus size={15} /> {t("newProvider")}
+                </button>
+              </div>
+            </div>
           ) : (
             <div className="grid max-w-[1040px] gap-4">
               <div className="flex items-center justify-between gap-3">
@@ -866,13 +917,13 @@ function App() {
 
               <div className="grid gap-3">
                 <div className="flex flex-wrap gap-2">
-                  <button type="button" className="primary flex items-center gap-2" onClick={() => saveCurrentConfig()}>
+                  <button type="button" className="primary flex items-center gap-2" onClick={() => saveCurrentConfig()} disabled={providerBusy}>
                     <Save size={15} /> {t("save")}
                   </button>
-                  <button type="button" className="flex items-center gap-2" onClick={applyCurrentProvider}>
+                  <button type="button" className="flex items-center gap-2" onClick={applyCurrentProvider} disabled={providerBusy}>
                     <Check size={15} /> {t("apply")}
                   </button>
-                  <button type="button" className="flex items-center gap-2" onClick={testCurrentProvider}>
+                  <button type="button" className="flex items-center gap-2" onClick={testCurrentProvider} disabled={providerBusy}>
                     <CirclePlay size={15} /> {t("test")}
                   </button>
                   <button type="button" onClick={() => outputDialogRef.current?.showModal()}>
@@ -885,12 +936,12 @@ function App() {
         </section>
       </main>
 
-      <dialog ref={outputDialogRef} className="dialog model-dialog p-4">
-        <button type="button" className="dialog-close icon-button" title={t("close")} onClick={() => outputDialogRef.current?.close()}>
+      <dialog ref={outputDialogRef} className="dialog model-dialog p-4" aria-labelledby="output-dialog-title">
+        <button type="button" className="dialog-close icon-button" aria-label={t("close")} onClick={() => outputDialogRef.current?.close()}>
           <X size={16} />
         </button>
         <div className="mb-3 flex items-center justify-between gap-3">
-          <h3 className="m-0 text-base font-semibold">{t("output")}</h3>
+          <h3 id="output-dialog-title" className="m-0 text-base font-semibold">{t("output")}</h3>
           <span className="muted">{testState.status === "idle" ? t("idleOutput") : t(testState.status)}</span>
         </div>
         <pre className="output">{testState.output || t("idleOutput")}</pre>
@@ -907,8 +958,8 @@ function App() {
         ) : null}
       </dialog>
 
-      <dialog ref={deleteDialogRef} className="dialog p-4">
-        <p>
+      <dialog ref={deleteDialogRef} className="dialog p-4" aria-labelledby="delete-provider-title">
+        <p id="delete-provider-title">
           {t("deleteConfirmPrefix")} "{activeProvider?.name}"?
         </p>
         <div className="flex justify-end gap-2">
@@ -921,11 +972,11 @@ function App() {
         </div>
       </dialog>
 
-      <dialog ref={modelDialogRef} className="dialog model-dialog p-4">
-        <button type="button" className="dialog-close icon-button" title={t("close")} onClick={() => modelDialogRef.current?.close()}>
+      <dialog ref={modelDialogRef} className="dialog model-dialog p-4" aria-labelledby="model-dialog-title">
+        <button type="button" className="dialog-close icon-button" aria-label={t("close")} onClick={() => modelDialogRef.current?.close()}>
           <X size={16} />
         </button>
-        <ModelConfigForm draft={modelDraft.model} providerKind={activeProvider?.kind ?? "custom"} onChange={(model) => setModelDraft({ ...modelDraft, model })} t={t} />
+        <ModelConfigForm id="model-dialog-title" draft={modelDraft.model} providerKind={activeProvider?.kind ?? "custom"} onChange={(model) => setModelDraft({ ...modelDraft, model })} t={t} />
         <div className="mt-4 flex justify-end gap-2">
           <button type="button" onClick={() => modelDialogRef.current?.close()}>
             {t("cancel")}
@@ -936,11 +987,11 @@ function App() {
         </div>
       </dialog>
 
-      <dialog ref={providerAdvancedDialogRef} className="dialog model-dialog p-4">
-        <button type="button" className="dialog-close icon-button" title={t("close")} onClick={() => providerAdvancedDialogRef.current?.close()}>
+      <dialog ref={providerAdvancedDialogRef} className="dialog model-dialog p-4" aria-labelledby="advanced-dialog-title">
+        <button type="button" className="dialog-close icon-button" aria-label={t("close")} onClick={() => providerAdvancedDialogRef.current?.close()}>
           <X size={16} />
         </button>
-        <h3 className="m-0 mb-4 text-base font-semibold">{t("providerAdvanced")}</h3>
+        <h3 id="advanced-dialog-title" className="m-0 mb-4 text-base font-semibold">{t("providerAdvanced")}</h3>
         {activeProvider?.kind === "official" ? (
           <ProviderAdvancedForm value={activeProvider.advanced ?? {}} onChange={(advanced) => updateActiveProvider({ ...activeProvider, advanced })} errors={errors} t={t} />
         ) : null}
@@ -953,6 +1004,70 @@ function App() {
         ) : null}
         <div className="mt-4 flex justify-end gap-2">
           <button type="button" className="primary" onClick={() => providerAdvancedDialogRef.current?.close()}>
+            {t("confirm")}
+          </button>
+        </div>
+      </dialog>
+
+      {/* Rename account dialog */}
+      <dialog ref={renameDialogRef} className="dialog p-4" aria-labelledby="rename-account-title">
+        <h3 id="rename-account-title" className="m-0 mb-3 text-base font-semibold">{t("renameAccount")}</h3>
+        <Field label={t("accountName")}>
+          <input
+            value={renameLabel}
+            onChange={(e) => setRenameLabel(e.target.value)}
+            onKeyDown={(e) => { if (e.key === "Enter") commitRename(); }}
+          />
+        </Field>
+        <div className="mt-3 flex justify-end gap-2">
+          <button type="button" onClick={() => renameDialogRef.current?.close()}>{t("cancel")}</button>
+          <button type="button" className="primary" onClick={commitRename} disabled={!renameLabel.trim()}>{t("confirm")}</button>
+        </div>
+      </dialog>
+
+      {/* Delete account dialog */}
+      <dialog ref={deleteAccountDialogRef} className="dialog p-4" aria-labelledby="delete-account-title">
+        <p id="delete-account-title">
+          {deleteAccountTarget?.activeInPi ? t("deleteActiveAccountConfirm") : t("deleteAccountConfirm")} "{deleteAccountTarget?.label}"?
+        </p>
+        <div className="flex justify-end gap-2">
+          <button type="button" onClick={() => deleteAccountDialogRef.current?.close()}>{t("cancel")}</button>
+          <button type="button" className="danger" onClick={commitDeleteAccount}>{t("confirm")}</button>
+        </div>
+      </dialog>
+
+      {/* OAuth manual code dialog */}
+      <dialog ref={oauthManualCodeDialogRef} className="dialog p-4" aria-labelledby="oauth-code-title">
+        <h3 id="oauth-code-title" className="m-0 mb-3 text-base font-semibold">{t("oauthManualCode")}</h3>
+        <Field label={oauthManualCodeState?.message ?? t("oauthManualCodePrompt")}>
+          <input
+            value={oauthManualCodeInput}
+            onChange={(e) => setOAuthManualCodeInput(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") {
+                const code = oauthManualCodeInput.trim();
+                if (code && oauthManualCodeState) {
+                  submitOAuthManualCode(oauthManualCodeState.loginId, code).catch((err) => showError(err));
+                  oauthManualCodeDialogRef.current?.close();
+                }
+              }
+            }}
+          />
+        </Field>
+        <div className="mt-3 flex justify-end gap-2">
+          <button type="button" onClick={() => oauthManualCodeDialogRef.current?.close()}>{t("cancel")}</button>
+          <button
+            type="button"
+            className="primary"
+            disabled={!oauthManualCodeInput.trim()}
+            onClick={() => {
+              const code = oauthManualCodeInput.trim();
+              if (code && oauthManualCodeState) {
+                submitOAuthManualCode(oauthManualCodeState.loginId, code).catch((err) => showError(err));
+                oauthManualCodeDialogRef.current?.close();
+              }
+            }}
+          >
             {t("confirm")}
           </button>
         </div>
@@ -1006,7 +1121,7 @@ function LabeledField({ label, field, help, required, children }: { label: strin
 }
 
 function SectionTitle({ children }: { children: React.ReactNode }) {
-  return <strong className="text-sm">{children}</strong>;
+  return <h3 className="m-0 text-sm font-semibold">{children}</h3>;
 }
 
 function SummaryHelp({ label, help }: { label: string; help: string }) {
@@ -1181,15 +1296,7 @@ function AccountsPanel({
             <div
               key={account.id}
               className={`account-row ${account.id === selectedAccount?.id ? "active" : ""}`}
-              role="button"
-              tabIndex={0}
               onClick={() => onSelect(account.id)}
-              onKeyDown={(event) => {
-                if (event.key === "Enter" || event.key === " ") {
-                  event.preventDefault();
-                  onSelect(account.id);
-                }
-              }}
             >
               <strong>{account.label}</strong>
               <span className="model-id">{accountIdentityText(account) || account.providerId}</span>
@@ -1431,7 +1538,7 @@ function OfficialProviderForm({
 
 function OAuthEventList({ events, t }: { events: OAuthLoginEvent[]; t: ReturnType<typeof createTranslator> }) {
   return (
-    <div className="grid gap-1">
+    <div className="grid gap-1" aria-live="polite" aria-atomic="false">
       {events.map((event, index) => (
         <div key={`${event.type}-${index}`} className="oauth-event muted">
           {formatOAuthEvent(event, t)}
@@ -1570,7 +1677,7 @@ function OfficialModelSelector({
   return (
     <section className="grid gap-3 rounded-md border p-3" style={{ borderColor: "var(--border)", background: "var(--surface)" }}>
       <div className="editor-grid grid grid-cols-[minmax(0,1fr)_auto] gap-2">
-        <input value={search} placeholder={t("searchModels")} onChange={(event) => onSearch(event.target.value)} />
+        <input value={search} aria-label={t("searchModels")} placeholder={t("searchModels")} onChange={(event) => onSearch(event.target.value)} />
         <span className="muted self-center">{loading ? t("running") : `${filtered.length}/${providerModels.length}`}</span>
       </div>
       <div className="model-list">
@@ -1642,7 +1749,7 @@ function CustomModelSelector({
     <div className="grid gap-3">
       {(candidateModels.length > 0 || fetching) ? (
         <section className="grid gap-3 rounded-md border p-3" style={{ borderColor: "var(--border)", background: "var(--surface)" }}>
-          <input value={search} placeholder={t("searchModels")} onChange={(event) => onSearch(event.target.value)} />
+        <input value={search} aria-label={t("searchModels")} placeholder={t("searchModels")} onChange={(event) => onSearch(event.target.value)} />
           <div className="grid max-h-56 gap-2 overflow-auto">
             {candidateModels
               .filter((model) => model.toLowerCase().includes(search.toLowerCase()))
@@ -1688,11 +1795,13 @@ function CustomModelSelector({
 }
 
 function ModelConfigForm({
+  id,
   draft,
   providerKind,
   onChange,
   t,
 }: {
+  id?: string;
   draft: ModelConfig;
   providerKind: Provider["kind"];
   onChange: (model: ModelConfig) => void;
@@ -1703,7 +1812,7 @@ function ModelConfigForm({
   };
   return (
     <div className="grid gap-4">
-      <h3 className="m-0 text-base font-semibold">{t("modelConfig")}</h3>
+      <h3 id={id} className="m-0 text-base font-semibold">{t("modelConfig")}</h3>
       <div className="editor-grid grid grid-cols-2 gap-4">
         <Field label={t("modelId")} required>
           <input value={draft.id} onChange={(event) => updateModel({ ...draft, id: event.target.value })} />
@@ -1803,8 +1912,8 @@ function HeadersEditor({
       {error ? <div className="field-error">{error}</div> : null}
       {value.map((header, index) => (
         <div key={index} className="editor-grid grid grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto] gap-2">
-          <input value={header.key} placeholder="header" onChange={(event) => onChange(value.map((item, itemIndex) => itemIndex === index ? { ...item, key: event.target.value } : item))} />
-          <input value={header.value} placeholder="value" onChange={(event) => onChange(value.map((item, itemIndex) => itemIndex === index ? { ...item, value: event.target.value } : item))} />
+          <input aria-label="header name" value={header.key} placeholder="header" onChange={(event) => onChange(value.map((item, itemIndex) => itemIndex === index ? { ...item, key: event.target.value } : item))} />
+          <input aria-label="header value" value={header.value} placeholder="value" onChange={(event) => onChange(value.map((item, itemIndex) => itemIndex === index ? { ...item, value: event.target.value } : item))} />
           <button type="button" className="danger" onClick={() => onChange(value.filter((_, itemIndex) => itemIndex !== index))}>
             {t("remove")}
           </button>
@@ -1831,6 +1940,7 @@ function ThinkingLevelMapEditor({
           <div key={level} className="editor-grid grid grid-cols-[120px_150px_minmax(0,1fr)] gap-2">
             <span className="self-center model-id">{level}</span>
             <select
+              aria-label={`${level} mapping`}
               value={value?.[level] === undefined ? "default" : value[level] === null ? "unsupported" : "custom"}
               onChange={(event) => {
                 const next = { ...(value ?? {}) };
@@ -1845,6 +1955,7 @@ function ThinkingLevelMapEditor({
               <option value="custom">{t("customValue")}</option>
             </select>
             <input
+              aria-label={`${level} custom value`}
               value={typeof value?.[level] === "string" ? value[level] ?? "" : ""}
               disabled={typeof value?.[level] !== "string"}
               onChange={(event) => onChange({ ...(value ?? {}), [level]: event.target.value })}
