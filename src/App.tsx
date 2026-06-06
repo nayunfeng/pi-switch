@@ -352,7 +352,7 @@ function App() {
         providers: config.providers.map((item) => (item.id === provider.id ? nextProvider : item)),
       };
       updateConfig(nextConfig);
-      await applyProviderToPi(nextConfig, provider.id);
+      await applyAuthAccount(result.account.id);
       await refreshAccounts();
       showToast("success", t("oauthLoginSuccess"));
     } catch (err) {
