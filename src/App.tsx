@@ -346,7 +346,14 @@ function App() {
       const label = `${OFFICIAL_PROVIDER_LABELS[provider.providerId]} OAuth`;
       const result = await loginOfficialProviderOAuth(provider.providerId, label);
       await refreshAccounts();
-      updateActiveProvider({ ...provider, authMode: "account", authAccountId: result.account.id });
+      const nextProvider = { ...provider, authMode: "account" as const, authAccountId: result.account.id };
+      const nextConfig = {
+        ...config,
+        providers: config.providers.map((item) => (item.id === provider.id ? nextProvider : item)),
+      };
+      updateConfig(nextConfig);
+      await applyProviderToPi(nextConfig, provider.id);
+      await refreshAccounts();
       showToast("success", t("oauthLoginSuccess"));
     } catch (err) {
       showError(err);
@@ -362,10 +369,11 @@ function App() {
     setAccountBusy(true);
     try {
       const result = await loginOfficialProviderOAuth(newAccountProviderId, newAccountLabel);
+      const applied = await applyAuthAccount(result.account.id);
       await refreshAccounts();
-      focusAccount(result.account);
+      focusAccount(applied);
       setNewAccountLabel("");
-      showToast("success", t("accountSaved"));
+      showToast("success", t("accountSavedAndApplied"));
     } catch (err) {
       showError(err);
     } finally {
@@ -382,11 +390,12 @@ function App() {
     setAccountBusy(true);
     try {
       const account = await createApiKeyAccount(newAccountProviderId, newAccountLabel, newAccountApiKey);
+      const applied = await applyAuthAccount(account.id);
       await refreshAccounts();
-      focusAccount(account);
+      focusAccount(applied);
       setNewAccountLabel("");
       setNewAccountApiKey("");
-      showToast("success", t("accountSaved"));
+      showToast("success", t("accountSavedAndApplied"));
     } catch (err) {
       showError(err);
     } finally {
