@@ -247,6 +247,22 @@ function App() {
     setSelectedAccountId(account.id);
   }
 
+  async function bindActiveProviderToAccount(account: AuthAccount) {
+    if (activeProvider?.kind !== "official" || activeProvider.providerId !== account.providerId) {
+      return;
+    }
+    const nextConfig = {
+      ...config,
+      providers: config.providers.map((provider) =>
+        provider.id === activeProvider.id
+          ? { ...activeProvider, authMode: "account" as const, authAccountId: account.id, apiKey: "" }
+          : provider,
+      ),
+    };
+    updateConfig(nextConfig);
+    await saveAppConfig(nextConfig);
+  }
+
   function addProvider() {
     const provider = createCustomProvider();
     updateConfig({
@@ -376,6 +392,7 @@ function App() {
       const applied = await applyAuthAccount(result.account.id);
       await refreshAccounts();
       focusAccount(applied);
+      await bindActiveProviderToAccount(applied);
       setNewAccountLabel("");
       showToast("success", t("accountSavedAndApplied"));
     } catch (err) {
@@ -397,6 +414,7 @@ function App() {
       const applied = await applyAuthAccount(account.id);
       await refreshAccounts();
       focusAccount(applied);
+      await bindActiveProviderToAccount(applied);
       setNewAccountLabel("");
       setNewAccountApiKey("");
       showToast("success", t("accountSavedAndApplied"));
@@ -455,18 +473,7 @@ function App() {
       const updated = await applyAuthAccount(account.id);
       await refreshAccounts();
       setSelectedAccountId(updated.id);
-      if (activeProvider?.kind === "official" && activeProvider.providerId === updated.providerId) {
-        const nextConfig = {
-          ...config,
-          providers: config.providers.map((provider) =>
-            provider.id === activeProvider.id
-              ? { ...activeProvider, authMode: "account" as const, authAccountId: updated.id, apiKey: "" }
-              : provider,
-          ),
-        };
-        updateConfig(nextConfig);
-        await saveAppConfig(nextConfig);
-      }
+      await bindActiveProviderToAccount(updated);
       showToast("success", t("accountApplied"));
     } catch (err) {
       showError(err);
