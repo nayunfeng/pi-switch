@@ -1277,7 +1277,7 @@ function OfficialProviderForm({
               <option value="">{t("selectAccount")}</option>
               {providerAccounts.map((account) => (
                 <option key={account.id} value={account.id}>
-                  {account.label} / {account.kind === "oauth" ? "OAuth" : "API Key"}
+                  {accountOptionLabel(account, t)}
                 </option>
               ))}
             </select>
@@ -1875,6 +1875,17 @@ function accountIdentityText(account: AuthAccount) {
     .sort((left, right) => accountIdentityRank(left.field) - accountIdentityRank(right.field))
     .slice(0, 3)
     .map((item) => `${accountIdentityLabel(item.field)}: ${item.value}`)
+    .join(" / ");
+}
+
+function accountOptionLabel(account: AuthAccount, t: ReturnType<typeof createTranslator>) {
+  return [
+    account.label,
+    accountIdentityText(account),
+    account.kind === "oauth" ? "OAuth" : "API Key",
+    account.activeInPi ? t("activeInPi") : t("saved"),
+  ]
+    .filter(Boolean)
     .join(" / ");
 }
 
