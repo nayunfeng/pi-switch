@@ -220,6 +220,7 @@ export type AuthAccount = {
   providerId: OfficialProviderId;
   label: string;
   kind: AuthAccountKind;
+  identity?: { field: string; value: string }[];
   createdAt: string;
   updatedAt: string;
   lastAppliedAt?: string;

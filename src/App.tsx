@@ -668,6 +668,7 @@ function App() {
                   onClick={() => setSelectedAccountId(account.id)}
                 >
                   <strong>{account.label}</strong>
+                  {accountIdentityText(account) ? <span className="provider-meta">{accountIdentityText(account)}</span> : null}
                   <span className="provider-meta">{OFFICIAL_PROVIDER_LABELS[account.providerId]} / {account.kind === "oauth" ? "OAuth" : "API Key"}</span>
                   <span className="provider-meta">{account.activeInPi ? t("activeInPi") : t("saved")}</span>
                 </button>
@@ -1111,7 +1112,7 @@ function AccountsPanel({
               }}
             >
               <strong>{account.label}</strong>
-              <span className="model-id">{account.providerId}</span>
+              <span className="model-id">{accountIdentityText(account) || account.providerId}</span>
               <span className="model-meta">{account.kind === "oauth" ? "OAuth" : "API Key"}</span>
               <span className="model-meta">{account.activeInPi ? t("activeInPi") : t("saved")}</span>
               <button
@@ -1133,6 +1134,7 @@ function AccountsPanel({
         <section className="grid gap-3 rounded-md border p-4" style={{ borderColor: "var(--border)", background: "var(--surface)" }}>
           <div>
             <h3 className="m-0 text-base font-semibold">{selectedAccount.label}</h3>
+            {accountIdentityText(selectedAccount) ? <div className="muted">{accountIdentityText(selectedAccount)}</div> : null}
             <div className="muted">{OFFICIAL_PROVIDER_LABELS[selectedAccount.providerId]} / {selectedAccount.kind === "oauth" ? "OAuth" : "API Key"} / {selectedAccount.id}</div>
           </div>
           <div className="flex flex-wrap gap-2">
@@ -1799,6 +1801,13 @@ function StringListField({ label, field, help, value, onChange }: { label: strin
 function providerLabel(provider: Provider) {
   if (provider.kind === "official") return OFFICIAL_PROVIDER_LABELS[provider.providerId] ?? provider.providerId;
   return piProviderId(provider);
+}
+
+function accountIdentityText(account: AuthAccount) {
+  return (account.identity ?? [])
+    .slice(0, 2)
+    .map((item) => `${item.field}: ${item.value}`)
+    .join(" / ");
 }
 
 function fieldError(code: string | undefined, t: ReturnType<typeof createTranslator>) {

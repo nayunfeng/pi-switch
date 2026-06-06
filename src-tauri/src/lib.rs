@@ -180,12 +180,21 @@ pub struct AuthAccountView {
     pub provider_id: String,
     pub label: String,
     pub kind: AuthAccountKind,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub identity: Vec<AuthAccountIdentity>,
     pub created_at: String,
     pub updated_at: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_applied_at: Option<String>,
     #[serde(default, skip_serializing_if = "is_false")]
     pub active_in_pi: bool,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AuthAccountIdentity {
+    pub field: String,
+    pub value: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -707,12 +716,89 @@ fn submit_oauth_manual_code_to_session(
     })
 }
 
+fn identity_field_is_safe(key: &str) -> bool {
+    let lower = key.to_ascii_lowercase();
+    matches!(
+        lower.as_str(),
+        "email"
+            | "mail"
+            | "username"
+            | "login"
+            | "account"
+            | "accountid"
+            | "organization"
+            | "org"
+            | "team"
+            | "tenant"
+            | "subject"
+            | "sub"
+            | "id"
+    )
+}
+
+fn field_name_is_secret(key: &str) -> bool {
+    let lower = key.to_ascii_lowercase();
+    ["token", "key", "secret", "refresh", "access", "authorization"]
+        .iter()
+        .any(|needle| lower.contains(needle))
+}
+
+fn collect_account_identity_fields(
+    value: &Value,
+    prefix: &str,
+    depth: usize,
+    fields: &mut Vec<AuthAccountIdentity>,
+) {
+    if depth > 3 || fields.len() >= 8 {
+        return;
+    }
+    let Some(object) = value.as_object() else {
+        return;
+    };
+    for (key, item) in object {
+        if fields.len() >= 8 || field_name_is_secret(key) {
+            continue;
+        }
+        let field = if prefix.is_empty() {
+            key.clone()
+        } else {
+            format!("{prefix}.{key}")
+        };
+        if identity_field_is_safe(key) {
+            let text = item
+                .as_str()
+                .map(str::trim)
+                .filter(|value| !value.is_empty() && value.len() <= 160)
+                .map(ToString::to_string)
+                .or_else(|| {
+                    item.as_i64()
+                        .map(|value| value.to_string())
+                        .filter(|value| value.len() <= 160)
+                });
+            if let Some(value) = text {
+                fields.push(AuthAccountIdentity { field, value });
+                continue;
+            }
+        }
+        if item.is_object() {
+            collect_account_identity_fields(item, &field, depth + 1, fields);
+        }
+    }
+}
+
+fn account_identity(credential: &Value) -> Vec<AuthAccountIdentity> {
+    let mut fields = Vec::new();
+    collect_account_identity_fields(credential, "", 0, &mut fields);
+    fields
+}
+
 fn account_to_view(account: &AuthAccount) -> AuthAccountView {
     AuthAccountView {
         id: account.id.clone(),
         provider_id: account.provider_id.clone(),
         label: account.label.clone(),
         kind: account.kind.clone(),
+        identity: account_identity(&account.credential),
         created_at: account.created_at.clone(),
         updated_at: account.updated_at.clone(),
         last_applied_at: account.last_applied_at.clone(),
@@ -3282,6 +3368,33 @@ mod tests {
         assert_eq!(value["id"], "codex_a");
         assert_eq!(value["providerId"], "openai-codex");
         assert_eq!(value["kind"], "oauth");
+    }
+
+    #[test]
+    fn account_view_serializes_safe_identity_without_secret_values() {
+        let mut account = test_account("codex_a", "openai-codex", "token-a");
+        account.credential = json!({
+            "type": "oauth",
+            "accessToken": "token-a",
+            "user": {
+                "email": "codex@example.test",
+                "id": "user-1",
+                "refreshToken": "refresh-token"
+            },
+            "account": {
+                "id": "account-1"
+            }
+        });
+
+        let value = serde_json::to_value(account_to_view(&account)).unwrap();
+
+        assert!(value.get("credential").is_none());
+        let identity = value["identity"].as_array().unwrap();
+        assert!(identity.contains(&json!({ "field": "user.email", "value": "codex@example.test" })));
+        assert!(identity.contains(&json!({ "field": "user.id", "value": "user-1" })));
+        assert!(identity.contains(&json!({ "field": "account.id", "value": "account-1" })));
+        assert!(!value.to_string().contains("token-a"));
+        assert!(!value.to_string().contains("refresh-token"));
     }
 
     #[test]
