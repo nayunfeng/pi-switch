@@ -123,7 +123,10 @@ function App() {
   const t = useMemo(() => createTranslator(language), [language]);
   const activeProvider = config.providers.find((provider) => provider.id === config.activeProviderId);
   const filteredAccounts = useMemo(
-    () => (accountProviderFilter === "all" ? accounts : accounts.filter((account) => account.providerId === accountProviderFilter)),
+    () =>
+      (accountProviderFilter === "all" ? accounts : accounts.filter((account) => account.providerId === accountProviderFilter))
+        .slice()
+        .sort(compareAccountsForDisplay),
     [accounts, accountProviderFilter],
   );
   const selectedAccount = filteredAccounts.find((account) => account.id === selectedAccountId) ?? filteredAccounts[0];
@@ -1832,6 +1835,17 @@ function StringListField({ label, field, help, value, onChange }: { label: strin
 function providerLabel(provider: Provider) {
   if (provider.kind === "official") return OFFICIAL_PROVIDER_LABELS[provider.providerId] ?? provider.providerId;
   return piProviderId(provider);
+}
+
+function compareAccountsForDisplay(left: AuthAccount, right: AuthAccount) {
+  if (left.activeInPi !== right.activeInPi) return left.activeInPi ? -1 : 1;
+  const provider = (OFFICIAL_PROVIDER_LABELS[left.providerId] ?? left.providerId).localeCompare(
+    OFFICIAL_PROVIDER_LABELS[right.providerId] ?? right.providerId,
+  );
+  if (provider !== 0) return provider;
+  const label = left.label.localeCompare(right.label);
+  if (label !== 0) return label;
+  return left.createdAt.localeCompare(right.createdAt);
 }
 
 function accountIdentityText(account: AuthAccount) {
