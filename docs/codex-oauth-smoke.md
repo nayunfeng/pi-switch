@@ -14,7 +14,7 @@
 2. Provider 选择 `OpenAI Codex`。
 3. 点击 `Add OAuth account`，在浏览器中完成第一个 Codex 账号登录。
 4. 回到应用，确认账号列表出现一个 `openai-codex OAuth` 账号，并显示 `Active in Pi`。
-5. 重复第 3 步，使用另一个 Codex 账号登录。
+5. 重复第 3 步，使用另一个 Codex 账号登录。浏览器可能复用当前网页登录态；如果没有账号选择页，先切换/退出浏览器里的 Codex 账号，或使用无痕窗口完成第二个账号登录。
 6. 账号列表应至少出现两个 `openai-codex` OAuth 账号，例如：
    - `openai-codex OAuth`
    - `openai-codex OAuth 2`
