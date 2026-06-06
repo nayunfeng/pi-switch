@@ -217,9 +217,10 @@ export type AuthAccountKind = "oauth" | "apiKey";
 
 export type AuthAccount = {
   id: string;
-  providerId: OfficialProviderId;
+  providerId: string;
   label: string;
   kind: AuthAccountKind;
+  baseUrl?: string;
   identity?: { field: string; value: string }[];
   createdAt: string;
   updatedAt: string;

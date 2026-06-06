@@ -165,6 +165,8 @@ pub struct AuthAccount {
     pub provider_id: String,
     pub label: String,
     pub kind: AuthAccountKind,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub base_url: Option<String>,
     pub credential: Value,
     pub created_at: String,
     pub updated_at: String,
@@ -181,6 +183,8 @@ pub struct AuthAccountView {
     pub provider_id: String,
     pub label: String,
     pub kind: AuthAccountKind,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub base_url: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub identity: Vec<AuthAccountIdentity>,
     pub created_at: String,
@@ -443,6 +447,7 @@ pub struct SubmitOAuthManualCodeInput {
 pub struct CreateApiKeyAccountInput {
     pub provider_id: String,
     pub label: String,
+    pub base_url: String,
     pub api_key: String,
 }
 
@@ -925,6 +930,7 @@ fn account_to_view(account: &AuthAccount) -> AuthAccountView {
         provider_id: account.provider_id.clone(),
         label: account.label.clone(),
         kind: account.kind.clone(),
+        base_url: account.base_url.clone(),
         identity: account_identity(&account.credential),
         created_at: account.created_at.clone(),
         updated_at: account.updated_at.clone(),
@@ -1080,13 +1086,17 @@ fn normalize_accounts(accounts: Vec<AuthAccount>) -> AppResult<Vec<AuthAccount>>
         account.id = account.id.trim().to_string();
         account.provider_id = account.provider_id.trim().to_string();
         account.label = account.label.trim().to_string();
+        account.base_url = account.base_url.and_then(|value| {
+            let trimmed = value.trim().to_string();
+            (!trimmed.is_empty()).then_some(trimmed)
+        });
         if account.id.is_empty() {
             return Err(validation_error("账号 ID 不能为空"));
         }
         if !ids.insert(account.id.clone()) {
             return Err(validation_error(format!("账号 ID 重复: {}", account.id)));
         }
-        validate_official_provider_id(&account.provider_id)?;
+        validate_account_provider_id(&account.provider_id, &account.kind)?;
         if account.label.is_empty() {
             account.label =
                 normalize_account_label(None, &account.provider_id, account.kind.clone());
@@ -1134,7 +1144,7 @@ fn restrict_file_permissions(path: &Path) -> AppResult<()> {
 fn load_accounts_store() -> AppResult<AccountsStore> {
     let paths = resolve_paths()?;
     let mut store = load_accounts_store_from_path(&paths.accounts_file)?;
-    if annotate_active_accounts(&mut store, &paths.pi_auth_file) {
+    if annotate_active_accounts_from_paths(&mut store, &paths.pi_auth_file, &paths.pi_models_file) {
         save_accounts_store_to_path(&paths.accounts_file, &store)?;
     }
     Ok(store)
@@ -1175,6 +1185,27 @@ fn annotate_active_accounts(store: &mut AccountsStore, pi_auth_file: &Path) -> b
             account.credential = current_credential.clone();
             account.updated_at = now_timestamp_string();
             changed = true;
+        }
+    }
+    changed
+}
+
+fn annotate_active_accounts_from_paths(
+    store: &mut AccountsStore,
+    pi_auth_file: &Path,
+    pi_models_file: &Path,
+) -> bool {
+    let changed = annotate_active_accounts(store, pi_auth_file);
+    for account in &mut store.accounts {
+        if account.kind != AuthAccountKind::ApiKey {
+            continue;
+        }
+        if account_api_key_endpoint_matches_pi_models(account, pi_models_file).unwrap_or(false) {
+            if !account_provider_writes_auth(account) {
+                account.active_in_pi = true;
+            }
+        } else {
+            account.active_in_pi = false;
         }
     }
     changed
@@ -1248,6 +1279,33 @@ fn account_matches_current_pi_auth(
     .is_some_and(|index| store.accounts[index].id == account_id))
 }
 
+fn account_matches_current_pi_state(
+    store: &AccountsStore,
+    account_id: &str,
+    pi_auth_file: &Path,
+    pi_models_file: &Path,
+) -> AppResult<bool> {
+    let Some(account) = store
+        .accounts
+        .iter()
+        .find(|account| account.id == account_id)
+    else {
+        return Ok(false);
+    };
+    let auth_matches = if account_provider_writes_auth(account) {
+        account_matches_current_pi_auth(store, account_id, pi_auth_file)?
+    } else {
+        true
+    };
+    if !auth_matches {
+        return Ok(false);
+    }
+    if account.kind == AuthAccountKind::ApiKey {
+        return account_api_key_endpoint_matches_pi_models(account, pi_models_file);
+    }
+    Ok(true)
+}
+
 fn sync_current_pi_auth_to_matching_account(
     store: &mut AccountsStore,
     pi_auth_file: &Path,
@@ -1279,6 +1337,20 @@ fn sync_current_pi_auth_to_matching_account(
 fn validate_official_provider_id(provider_id: &str) -> AppResult<()> {
     if provider_id.trim().is_empty() || !OFFICIAL_PROVIDER_IDS.contains(&provider_id) {
         return Err(validation_error("未知官方供应商"));
+    }
+    Ok(())
+}
+
+fn is_official_provider_id(provider_id: &str) -> bool {
+    OFFICIAL_PROVIDER_IDS.contains(&provider_id)
+}
+
+fn validate_account_provider_id(provider_id: &str, kind: &AuthAccountKind) -> AppResult<()> {
+    if provider_id.trim().is_empty() {
+        return Err(validation_error("账号供应商不能为空"));
+    }
+    if matches!(kind, AuthAccountKind::OAuth) {
+        validate_official_provider_id(provider_id)?;
     }
     Ok(())
 }
@@ -1320,18 +1392,136 @@ fn create_api_key_credential(api_key: &str) -> Value {
     })
 }
 
+fn account_provider_writes_auth(account: &AuthAccount) -> bool {
+    is_official_provider_id(&account.provider_id)
+}
+
+fn account_api_key_endpoint_matches_pi_models(
+    account: &AuthAccount,
+    path: &Path,
+) -> AppResult<bool> {
+    if account.kind != AuthAccountKind::ApiKey {
+        return Ok(true);
+    }
+    let Some(base_url) = account
+        .base_url
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    else {
+        return Ok(account_provider_writes_auth(account));
+    };
+    let models = read_json_object(path, "PI_MODELS_READ_FAILED", "models.json")?;
+    let Some(provider) = models
+        .get("providers")
+        .and_then(Value::as_object)
+        .and_then(|providers| providers.get(&account.provider_id))
+        .and_then(Value::as_object)
+    else {
+        return Ok(false);
+    };
+    if provider
+        .get("baseUrl")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        != Some(base_url)
+    {
+        return Ok(false);
+    }
+    if !account_provider_writes_auth(account) {
+        let api_key = account_credential_api_key(&account.credential)
+            .ok_or_else(|| validation_error("API Key 凭证不能为空"))?;
+        return Ok(provider
+            .get("apiKey")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            == Some(api_key.as_str()));
+    }
+    Ok(true)
+}
+
+fn overlay_account_endpoint_on_models_value(
+    value: &mut Value,
+    account: &AuthAccount,
+) -> AppResult<bool> {
+    if account.kind != AuthAccountKind::ApiKey {
+        return Ok(false);
+    }
+    validate_account_credential(account)?;
+    let Some(base_url) = account
+        .base_url
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    else {
+        return Ok(false);
+    };
+    if !value.is_object() {
+        *value = json!({});
+    }
+    let object = value
+        .as_object_mut()
+        .ok_or_else(|| validation_error("models.json 必须是 object"))?;
+    if !object.get("providers").is_some_and(Value::is_object) {
+        object.insert("providers".to_string(), Value::Object(Map::new()));
+    }
+    let providers = object
+        .get_mut("providers")
+        .and_then(Value::as_object_mut)
+        .ok_or_else(|| validation_error("models.json providers 必须是 object"))?;
+    if !providers
+        .get(&account.provider_id)
+        .is_some_and(Value::is_object)
+    {
+        providers.insert(account.provider_id.clone(), Value::Object(Map::new()));
+    }
+    let provider = providers
+        .get_mut(&account.provider_id)
+        .and_then(Value::as_object_mut)
+        .ok_or_else(|| validation_error("models.json provider 必须是 object"))?;
+    provider.insert("baseUrl".to_string(), Value::String(base_url.to_string()));
+    if !account_provider_writes_auth(account) {
+        let api_key = account_credential_api_key(&account.credential)
+            .ok_or_else(|| validation_error("API Key 凭证不能为空"))?;
+        provider.insert("apiKey".to_string(), Value::String(api_key));
+    }
+    Ok(true)
+}
+
+fn build_account_models_json(account: &AuthAccount, path: &Path) -> AppResult<Option<Value>> {
+    if account.kind != AuthAccountKind::ApiKey {
+        return Ok(None);
+    }
+    let mut value = Value::Object(read_json_object(
+        path,
+        "PI_MODELS_WRITE_FAILED",
+        "models.json",
+    )?);
+    if overlay_account_endpoint_on_models_value(&mut value, account)? {
+        Ok(Some(value))
+    } else {
+        Ok(None)
+    }
+}
+
 fn upsert_auth_account(
     store: &mut AccountsStore,
     provider_id: String,
     label: String,
     kind: AuthAccountKind,
+    base_url: Option<String>,
     credential: Value,
 ) -> AppResult<AuthAccount> {
-    validate_official_provider_id(&provider_id)?;
+    validate_account_provider_id(&provider_id, &kind)?;
+    let base_url = base_url.and_then(|value| {
+        let trimmed = value.trim().to_string();
+        (!trimmed.is_empty()).then_some(trimmed)
+    });
     let now = now_timestamp_string();
     if let Some(account) = store.accounts.iter_mut().find(|account| {
         account.provider_id == provider_id
             && account.kind == kind
+            && account.base_url == base_url
             && account.credential == credential
     }) {
         account.updated_at = now;
@@ -1358,6 +1548,7 @@ fn upsert_auth_account(
         provider_id,
         label: unique_account_label(store, &label),
         kind,
+        base_url,
         credential,
         created_at: now.clone(),
         updated_at: now,
@@ -1385,6 +1576,7 @@ fn duplicate_auth_account_in_store(
         provider_id: source.provider_id,
         label: unique_account_label(store, &format!("{} Copy", source.label)),
         kind: source.kind,
+        base_url: source.base_url,
         credential: source.credential,
         created_at: now.clone(),
         updated_at: now,
@@ -1481,22 +1673,24 @@ fn submit_oauth_manual_code(
 
 #[tauri::command]
 fn create_api_key_account(input: CreateApiKeyAccountInput) -> AppResult<AuthAccountView> {
-    validate_official_provider_id(input.provider_id.trim())?;
+    let provider_id = input.provider_id.trim();
+    validate_account_provider_id(provider_id, &AuthAccountKind::ApiKey)?;
+    let base_url = input.base_url.trim();
+    if base_url.is_empty() {
+        return Err(validation_error("Base URL 不能为空"));
+    }
     let api_key = input.api_key.trim();
     if api_key.is_empty() {
         return Err(validation_error("API Key 不能为空"));
     }
     let mut store = load_accounts_store()?;
-    let label = normalize_account_label(
-        Some(&input.label),
-        input.provider_id.trim(),
-        AuthAccountKind::ApiKey,
-    );
+    let label = normalize_account_label(Some(&input.label), provider_id, AuthAccountKind::ApiKey);
     let mut account = upsert_auth_account(
         &mut store,
-        input.provider_id.trim().to_string(),
+        provider_id.to_string(),
         label,
         AuthAccountKind::ApiKey,
+        Some(base_url.to_string()),
         create_api_key_credential(api_key),
     )?;
     save_accounts_store(&store)?;
@@ -1555,6 +1749,10 @@ fn duplicate_auth_account(input: DuplicateAuthAccountInput) -> AppResult<AuthAcc
 #[tauri::command]
 fn apply_auth_account(input: ApplyAuthAccountInput) -> AppResult<AuthAccountView> {
     let paths = resolve_paths()?;
+    apply_account_to_pi(input, &paths)
+}
+
+fn apply_account_to_pi(input: ApplyAuthAccountInput, paths: &Paths) -> AppResult<AuthAccountView> {
     fs::create_dir_all(&paths.pi_agent_dir).map_err(|err| {
         AppError::new("PI_AUTH_WRITE_FAILED", "创建 Pi 配置目录失败").with_details(err.to_string())
     })?;
@@ -1565,19 +1763,37 @@ fn apply_auth_account(input: ApplyAuthAccountInput) -> AppResult<AuthAccountView
         .position(|account| account.id == input.account_id)
         .ok_or_else(|| validation_error("账号不存在"))?;
     let provider_id = store.accounts[index].provider_id.clone();
-    let target_is_current =
-        account_matches_current_pi_auth(&store, &input.account_id, &paths.pi_auth_file)?;
-    let _ = sync_current_pi_auth_to_matching_account(
-        &mut store,
+    let target_is_current = account_matches_current_pi_state(
+        &store,
+        &input.account_id,
         &paths.pi_auth_file,
-        &provider_id,
-        (!target_is_current).then_some(input.account_id.as_str()),
+        &paths.pi_models_file,
     )?;
+    if account_provider_writes_auth(&store.accounts[index]) {
+        let _ = sync_current_pi_auth_to_matching_account(
+            &mut store,
+            &paths.pi_auth_file,
+            &provider_id,
+            (!target_is_current).then_some(input.account_id.as_str()),
+        )?;
+    }
+    if let Some(models_json) =
+        build_account_models_json(&store.accounts[index], &paths.pi_models_file)?
+    {
+        write_pi_file(
+            &paths.pi_models_file,
+            &models_json,
+            "models.json",
+            "PI_MODELS_WRITE_FAILED",
+            &[],
+        )?;
+    }
     write_account_to_pi_auth(&store.accounts[index], &paths.pi_auth_file)?;
     let now = now_timestamp_string();
     store.accounts[index].last_applied_at = Some(now.clone());
     store.accounts[index].updated_at = now;
-    let _ = annotate_active_accounts(&mut store, &paths.pi_auth_file);
+    let _ =
+        annotate_active_accounts_from_paths(&mut store, &paths.pi_auth_file, &paths.pi_models_file);
     let account = store.accounts[index].clone();
     save_accounts_store_to_path(&paths.accounts_file, &store)?;
     Ok(account_to_view(&account))
@@ -1605,7 +1821,7 @@ fn import_pi_auth_account(input: ImportPiAuthAccountInput) -> AppResult<AuthAcco
         kind.clone(),
         &credential,
     );
-    let mut account = upsert_auth_account(&mut store, provider_id, label, kind, credential)?;
+    let mut account = upsert_auth_account(&mut store, provider_id, label, kind, None, credential)?;
     save_accounts_store_to_path(&paths.accounts_file, &store)?;
     account.active_in_pi = true;
     Ok(account_to_view(&account))
@@ -1962,6 +2178,7 @@ async fn login_official_provider_oauth(
         input.provider_id,
         label,
         AuthAccountKind::OAuth,
+        None,
         credential,
     )?;
     save_accounts_store(&store)?;
@@ -2545,6 +2762,9 @@ fn build_auth_json(
 
 fn write_account_to_pi_auth(account: &AuthAccount, path: &Path) -> AppResult<()> {
     validate_account_credential(account)?;
+    if !account_provider_writes_auth(account) {
+        return Ok(());
+    }
     let mut auth = read_json_object(path, "PI_AUTH_WRITE_FAILED", "auth.json")?;
     auth.insert(account.provider_id.clone(), account.credential.clone());
     atomic_write_json(path, &Value::Object(auth)).map_err(|err| {
@@ -3476,6 +3696,7 @@ mod tests {
             provider_id: provider_id.to_string(),
             label: id.to_string(),
             kind: AuthAccountKind::OAuth,
+            base_url: None,
             credential: json!({
                 "type": "oauth",
                 "accessToken": token
@@ -3538,6 +3759,7 @@ mod tests {
             "openai-codex".to_string(),
             label.clone(),
             AuthAccountKind::OAuth,
+            None,
             json!({ "type": "oauth", "accessToken": "token-a" }),
         )
         .unwrap();
@@ -3546,6 +3768,7 @@ mod tests {
             "openai-codex".to_string(),
             label.clone(),
             AuthAccountKind::OAuth,
+            None,
             json!({ "type": "oauth", "accessToken": "token-b" }),
         )
         .unwrap();
@@ -3554,6 +3777,7 @@ mod tests {
             "openai-codex".to_string(),
             label,
             AuthAccountKind::OAuth,
+            None,
             json!({ "type": "oauth", "accessToken": "token-c" }),
         )
         .unwrap();
@@ -3614,6 +3838,7 @@ mod tests {
             "openai-codex".to_string(),
             "openai-codex OAuth".to_string(),
             AuthAccountKind::OAuth,
+            None,
             json!({ "type": "oauth", "accessToken": "token-a" }),
         )
         .unwrap();
@@ -3656,6 +3881,7 @@ mod tests {
             "openai-codex".to_string(),
             "openai-codex OAuth".to_string(),
             AuthAccountKind::OAuth,
+            None,
             json!({
                 "type": "oauth",
                 "tokens": {
@@ -3768,6 +3994,7 @@ mod tests {
             provider_id: "openai".to_string(),
             label: "OpenAI Key".to_string(),
             kind: AuthAccountKind::ApiKey,
+            base_url: Some("https://api.openai.com/v1".to_string()),
             credential: create_api_key_credential("sk-account"),
             created_at: "1".to_string(),
             updated_at: "1".to_string(),
@@ -3777,6 +4004,8 @@ mod tests {
         let value = serde_json::to_value(account_to_view(&account)).unwrap();
 
         assert_eq!(value["kind"], "apiKey");
+        assert_eq!(value["baseUrl"], "https://api.openai.com/v1");
+        assert!(value.get("credential").is_none());
     }
 
     #[test]
@@ -4002,6 +4231,7 @@ mod tests {
             provider_id: "openai".to_string(),
             label: "OpenAI Key".to_string(),
             kind: AuthAccountKind::ApiKey,
+            base_url: Some("https://api.openai.com/v1".to_string()),
             credential: create_api_key_credential("sk-account"),
             created_at: "1".to_string(),
             updated_at: "1".to_string(),
@@ -4033,6 +4263,7 @@ mod tests {
                 provider_id: "openai".to_string(),
                 label: "OpenAI Key".to_string(),
                 kind: AuthAccountKind::ApiKey,
+                base_url: Some("https://api.openai.com/v1".to_string()),
                 credential: create_api_key_credential("sk-saved"),
                 created_at: "1".to_string(),
                 updated_at: "1".to_string(),
@@ -4046,6 +4277,134 @@ mod tests {
         assert!(!changed);
         assert!(!store.accounts[0].active_in_pi);
         assert_eq!(store.accounts[0].credential["key"], "sk-saved");
+    }
+
+    #[test]
+    fn account_models_json_overlay_preserves_existing_models_and_overrides_endpoint() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("models.json");
+        fs::write(
+            &path,
+            r#"{
+              "providers": {
+                "openai": {
+                  "baseUrl": "https://old.example.com/v1",
+                  "models": [{ "id": "gpt-5.5" }]
+                },
+                "Relay": {
+                  "baseUrl": "https://relay.example.com/v1",
+                  "apiKey": "relay-key"
+                }
+              }
+            }"#,
+        )
+        .unwrap();
+        let account = AuthAccount {
+            id: "openai_key".to_string(),
+            provider_id: "openai".to_string(),
+            label: "OpenAI Key".to_string(),
+            kind: AuthAccountKind::ApiKey,
+            base_url: Some(" https://proxy.example.com/v1 ".to_string()),
+            credential: create_api_key_credential("sk-account"),
+            created_at: "1".to_string(),
+            updated_at: "1".to_string(),
+            last_applied_at: None,
+            active_in_pi: false,
+        };
+
+        let value = build_account_models_json(&account, &path).unwrap().unwrap();
+
+        assert_eq!(
+            value["providers"]["openai"]["baseUrl"],
+            "https://proxy.example.com/v1"
+        );
+        assert_eq!(value["providers"]["openai"]["models"][0]["id"], "gpt-5.5");
+        assert!(value["providers"]["openai"].get("apiKey").is_none());
+        assert_eq!(value["providers"]["Relay"]["apiKey"], "relay-key");
+    }
+
+    #[test]
+    fn applying_custom_api_key_account_writes_models_without_touching_settings_or_auth() {
+        let dir = tempfile::tempdir().unwrap();
+        let app_config_dir = dir.path().join("PiSwitch");
+        let pi_agent_dir = dir.path().join(".pi").join("agent");
+        fs::create_dir_all(&app_config_dir).unwrap();
+        fs::create_dir_all(&pi_agent_dir).unwrap();
+        fs::write(
+            pi_agent_dir.join("auth.json"),
+            r#"{ "openai": { "type": "oauth", "accessToken": "keep" } }"#,
+        )
+        .unwrap();
+        fs::write(
+            pi_agent_dir.join("settings.json"),
+            r#"{ "defaultProvider": "openai", "defaultModel": "gpt-5.5", "enabledModels": ["gpt-5.5"] }"#,
+        )
+        .unwrap();
+        fs::write(
+            pi_agent_dir.join("models.json"),
+            r#"{ "providers": { "Relay": { "models": [{ "id": "deepseek-chat" }] } } }"#,
+        )
+        .unwrap();
+        let account = AuthAccount {
+            id: "relay_key".to_string(),
+            provider_id: "Relay".to_string(),
+            label: "Relay Key".to_string(),
+            kind: AuthAccountKind::ApiKey,
+            base_url: Some("https://relay.example.com/v1".to_string()),
+            credential: create_api_key_credential("relay-key"),
+            created_at: "1".to_string(),
+            updated_at: "1".to_string(),
+            last_applied_at: None,
+            active_in_pi: false,
+        };
+        save_accounts_store_to_path(
+            &app_config_dir.join("accounts.json"),
+            &AccountsStore {
+                version: ACCOUNTS_VERSION,
+                accounts: vec![account],
+            },
+        )
+        .unwrap();
+        let paths = Paths {
+            app_config_dir: app_config_dir.clone(),
+            app_config_file: app_config_dir.join("config.json"),
+            accounts_file: app_config_dir.join("accounts.json"),
+            pi_agent_dir: pi_agent_dir.clone(),
+            pi_models_file: pi_agent_dir.join("models.json"),
+            pi_auth_file: pi_agent_dir.join("auth.json"),
+            pi_settings_file: pi_agent_dir.join("settings.json"),
+            home: dir.path().to_path_buf(),
+        };
+
+        let applied = apply_account_to_pi(
+            ApplyAuthAccountInput {
+                account_id: "relay_key".to_string(),
+            },
+            &paths,
+        )
+        .unwrap();
+
+        assert_eq!(applied.id, "relay_key");
+        assert!(applied.active_in_pi);
+        let models: Value =
+            serde_json::from_str(&fs::read_to_string(paths.pi_models_file).unwrap()).unwrap();
+        let auth: Value =
+            serde_json::from_str(&fs::read_to_string(paths.pi_auth_file).unwrap()).unwrap();
+        let settings: Value =
+            serde_json::from_str(&fs::read_to_string(paths.pi_settings_file).unwrap()).unwrap();
+        assert_eq!(
+            models["providers"]["Relay"]["baseUrl"],
+            "https://relay.example.com/v1"
+        );
+        assert_eq!(models["providers"]["Relay"]["apiKey"], "relay-key");
+        assert_eq!(
+            models["providers"]["Relay"]["models"][0]["id"],
+            "deepseek-chat"
+        );
+        assert_eq!(auth["openai"]["accessToken"], "keep");
+        assert!(auth.get("Relay").is_none());
+        assert_eq!(settings["defaultProvider"], "openai");
+        assert_eq!(settings["defaultModel"], "gpt-5.5");
     }
 
     #[test]

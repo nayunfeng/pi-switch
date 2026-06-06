@@ -3,7 +3,7 @@ import type { Language } from "./domain";
 const messages = {
   "zh-CN": {
     title: "Pi Switch",
-    subtitle: "供应商配置控制台",
+    subtitle: "账号切换与维护",
     providers: "供应商",
     accounts: "账号",
     newProvider: "新建供应商",
@@ -41,6 +41,9 @@ const messages = {
     addApiKeyAccount: "添加 API Key 账号",
     apiKeyAccount: "API Key 账号",
     apiKeyAccountHelp: "API Key 只用于手动保存 API Key 账号，不参与 OAuth 登录。",
+    providerSource: "供应商来源",
+    apiKeyOfficialProviderHelp: "选择内置供应商时会带入默认 Base URL，保存后账号会保留你确认的 Base URL 和 API Key 快照。",
+    apiKeyCustomProviderHelp: "选择自定义供应商时会带入当前配置的 Base URL 和 API Key，保存后账号不再随供应商配置变化。",
     oauthAccountHelp: "OAuth 登录后会从凭据里提取邮箱、用户 ID 或账号 ID 作为身份摘要；账号名称可之后再重命名。",
     importPiAuth: "从 Pi 当前认证导入",
     savedAccounts: "已保存账号",
@@ -248,7 +251,7 @@ const messages = {
   },
   "en-US": {
     title: "Pi Switch",
-    subtitle: "Provider configuration console",
+    subtitle: "Account switching and maintenance",
     providers: "Providers",
     accounts: "Accounts",
     newProvider: "New provider",
@@ -286,6 +289,9 @@ const messages = {
     addApiKeyAccount: "Add API Key account",
     apiKeyAccount: "API Key account",
     apiKeyAccountHelp: "The API Key field is only for manually saving an API Key account. It is not used for OAuth login.",
+    providerSource: "Provider source",
+    apiKeyOfficialProviderHelp: "Built-in providers fill a default Base URL. The saved account keeps the confirmed Base URL and API Key snapshot.",
+    apiKeyCustomProviderHelp: "Custom providers fill the current Base URL and API Key. The saved account will not track later provider changes.",
     oauthAccountHelp: "OAuth login extracts an email, user ID, or account ID from the credential as the identity summary. You can rename the account later.",
     importPiAuth: "Import current Pi auth",
     savedAccounts: "Saved accounts",

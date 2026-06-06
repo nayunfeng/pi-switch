@@ -79,7 +79,9 @@ type OAuthState = {
 };
 
 type MainTab = "providers" | "accounts";
-type AccountProviderFilter = "all" | OfficialProviderId;
+type AccountProviderFilter = "all" | string;
+type AddAccountMode = "oauth" | "apiKey";
+type ApiKeyProviderSource = "official" | "custom";
 
 type ModelDraft = {
   model: ModelConfig;
@@ -88,14 +90,42 @@ type ModelDraft = {
 
 const EMPTY_MODEL_DRAFT: ModelDraft = { model: createModel() };
 const THINKING_LEVELS: ThinkingLevel[] = ["off", "minimal", "low", "medium", "high", "xhigh"];
+const OFFICIAL_PROVIDER_BASE_URLS: Partial<Record<OfficialProviderId, string>> = {
+  anthropic: "https://api.anthropic.com",
+  openai: "https://api.openai.com/v1",
+  "openai-codex": "https://api.openai.com/v1",
+  "azure-openai-responses": "https://{resource}.openai.azure.com/openai/v1",
+  deepseek: "https://api.deepseek.com",
+  "github-copilot": "https://api.githubcopilot.com",
+  xai: "https://api.x.ai/v1",
+  groq: "https://api.groq.com/openai/v1",
+  cerebras: "https://api.cerebras.ai/v1",
+  openrouter: "https://openrouter.ai/api/v1",
+  "vercel-ai-gateway": "https://ai-gateway.vercel.sh/v1",
+  mistral: "https://api.mistral.ai/v1",
+  minimax: "https://api.minimax.io/v1",
+  "minimax-cn": "https://api.minimax.chat/v1",
+  moonshotai: "https://api.moonshot.ai/v1",
+  "moonshotai-cn": "https://api.moonshot.cn/v1",
+  huggingface: "https://router.huggingface.co/v1",
+  fireworks: "https://api.fireworks.ai/inference/v1",
+  together: "https://api.together.xyz/v1",
+  "cloudflare-ai-gateway": "https://gateway.ai.cloudflare.com/v1/{account}/{gateway}",
+};
 
 function App() {
   const [config, setConfig] = useState<AppConfig>(() => normalizeConfig({ schemaVersion: 3, theme: "system", providers: [] }));
   const [accounts, setAccounts] = useState<AuthAccount[]>([]);
-  const [activeTab, setActiveTab] = useState<MainTab>("providers");
+  const [activeTab, setActiveTab] = useState<MainTab>("accounts");
   const [selectedAccountId, setSelectedAccountId] = useState<string>();
   const [accountProviderFilter, setAccountProviderFilter] = useState<AccountProviderFilter>("all");
-  const [newAccountProviderId, setNewAccountProviderId] = useState<OfficialProviderId>("openai-codex");
+  const [newOAuthProviderId, setNewOAuthProviderId] = useState<OfficialProviderId>("openai-codex");
+  const [newAccountProviderId, setNewAccountProviderId] = useState<string>("openai-codex");
+  const [newAccountMode, setNewAccountMode] = useState<AddAccountMode>("oauth");
+  const [newApiKeyProviderSource, setNewApiKeyProviderSource] = useState<ApiKeyProviderSource>("official");
+  const [newApiKeyOfficialProviderId, setNewApiKeyOfficialProviderId] = useState<OfficialProviderId>("openai-codex");
+  const [newApiKeyCustomProviderId, setNewApiKeyCustomProviderId] = useState("");
+  const [newAccountBaseUrl, setNewAccountBaseUrl] = useState(officialProviderBaseUrl("openai-codex"));
   const [newAccountLabel, setNewAccountLabel] = useState("");
   const [newAccountApiKey, setNewAccountApiKey] = useState("");
   const [showAccountKey, setShowAccountKey] = useState(false);
@@ -118,6 +148,7 @@ function App() {
   const modelDialogRef = useRef<HTMLDialogElement>(null);
   const providerAdvancedDialogRef = useRef<HTMLDialogElement>(null);
   const outputDialogRef = useRef<HTMLDialogElement>(null);
+  const addAccountDialogRef = useRef<HTMLDialogElement>(null);
   const renameDialogRef = useRef<HTMLDialogElement>(null);
   const deleteAccountDialogRef = useRef<HTMLDialogElement>(null);
   const oauthManualCodeDialogRef = useRef<HTMLDialogElement>(null);
@@ -139,6 +170,7 @@ function App() {
         .sort(compareAccountsForDisplay),
     [accounts, accountProviderFilter],
   );
+  const customProviderOptions = useMemo(() => config.providers.filter((provider): provider is Extract<Provider, { kind: "custom" }> => provider.kind === "custom"), [config.providers]);
   const selectedAccount = filteredAccounts.find((account) => account.id === selectedAccountId) ?? filteredAccounts[0];
   const errors = validationErrors(activeProvider);
 
@@ -204,6 +236,29 @@ function App() {
   }, [toast]);
 
   useEffect(() => {
+    if (newApiKeyProviderSource === "official") {
+      setNewAccountProviderId(newApiKeyOfficialProviderId);
+      setNewAccountBaseUrl(officialProviderBaseUrl(newApiKeyOfficialProviderId));
+      setNewAccountApiKey("");
+      return;
+    }
+    const selectedCustomProvider = customProviderOptions.find((provider) => provider.id === newApiKeyCustomProviderId) ?? customProviderOptions[0];
+    if (!selectedCustomProvider) {
+      setNewApiKeyCustomProviderId("");
+      setNewAccountProviderId("");
+      setNewAccountBaseUrl("");
+      setNewAccountApiKey("");
+      return;
+    }
+    if (selectedCustomProvider.id !== newApiKeyCustomProviderId) {
+      setNewApiKeyCustomProviderId(selectedCustomProvider.id);
+    }
+    setNewAccountProviderId(piProviderId(selectedCustomProvider));
+    setNewAccountBaseUrl(selectedCustomProvider.baseUrl);
+    setNewAccountApiKey(selectedCustomProvider.apiKey);
+  }, [customProviderOptions, newApiKeyCustomProviderId, newApiKeyOfficialProviderId, newApiKeyProviderSource]);
+
+  useEffect(() => {
     document.documentElement.lang = language;
     document.title = t("title");
   }, [language, t]);
@@ -239,7 +294,8 @@ function App() {
       openedEmptyAccountsRef.current = true;
       setActiveTab("accounts");
       setAccountProviderFilter("openai-codex");
-      setNewAccountProviderId("openai-codex");
+      setNewOAuthProviderId("openai-codex");
+      setNewApiKeyOfficialProviderId("openai-codex");
     }
   }
 
@@ -263,18 +319,23 @@ function App() {
   }
 
   function manageAccountsForProvider(providerId: OfficialProviderId) {
-    setNewAccountProviderId(providerId);
+    setNewOAuthProviderId(providerId);
+    setNewApiKeyOfficialProviderId(providerId);
     setAccountProviderFilter(providerId);
     setActiveTab("accounts");
   }
 
   function focusAccount(account: AuthAccount) {
     setAccountProviderFilter(account.providerId);
-    setNewAccountProviderId(account.providerId);
+    if (isOfficialProviderId(account.providerId)) {
+      setNewOAuthProviderId(account.providerId);
+      setNewApiKeyOfficialProviderId(account.providerId);
+    }
     setSelectedAccountId(account.id);
   }
 
   async function bindActiveProviderToAccount(account: AuthAccount) {
+    if (!isOfficialProviderId(account.providerId)) return;
     const matchingProvider =
       activeProvider?.kind === "official" && activeProvider.providerId === account.providerId
         ? activeProvider
@@ -426,19 +487,20 @@ function App() {
     }
   }
 
-  async function addOAuthAccount(providerId = newAccountProviderId) {
+  async function addOAuthAccount(providerId = newOAuthProviderId) {
     if (oauthState.running) return;
     openedOAuthUrlsRef.current.clear();
-    setNewAccountProviderId(providerId);
+    setNewOAuthProviderId(providerId);
     setOAuthState({ providerId, running: true, events: [] });
     setAccountBusy(true);
     try {
-      const result = await loginOfficialProviderOAuth(providerId);
+      const result = await loginOfficialProviderOAuth(providerId, newAccountLabel);
       const applied = await applyAuthAccount(result.account.id);
       await refreshAccounts();
       focusAccount(applied);
       await bindActiveProviderToAccount(applied);
       setNewAccountLabel("");
+      addAccountDialogRef.current?.close();
       showToast("success", t("accountSavedAndApplied"));
     } catch (err) {
       showError(err);
@@ -449,19 +511,27 @@ function App() {
   }
 
   async function addApiKeyAccount() {
+    if (!newAccountProviderId.trim()) {
+      showToast("error", t("required"));
+      return;
+    }
+    if (!newAccountBaseUrl.trim()) {
+      showToast("error", t("required"));
+      return;
+    }
     if (!newAccountApiKey.trim()) {
       showToast("error", t("required"));
       return;
     }
     setAccountBusy(true);
     try {
-      const account = await createApiKeyAccount(newAccountProviderId, newAccountLabel, newAccountApiKey);
+      const account = await createApiKeyAccount(newAccountProviderId, newAccountLabel, newAccountBaseUrl, newAccountApiKey);
       const applied = await applyAuthAccount(account.id);
       await refreshAccounts();
       focusAccount(applied);
-      await bindActiveProviderToAccount(applied);
       setNewAccountLabel("");
       setNewAccountApiKey("");
+      addAccountDialogRef.current?.close();
       showToast("success", t("accountSavedAndApplied"));
     } catch (err) {
       showError(err);
@@ -478,7 +548,7 @@ function App() {
     setAccountBusy(true);
     try {
       const label = `${provider.name || OFFICIAL_PROVIDER_LABELS[provider.providerId]} API Key`;
-      const account = await createApiKeyAccount(provider.providerId, label, provider.apiKey);
+      const account = await createApiKeyAccount(provider.providerId, label, provider.advanced?.baseUrl ?? officialProviderBaseUrl(provider.providerId), provider.apiKey);
       await refreshAccounts();
       const nextProvider = { ...provider, authMode: "account" as const, authAccountId: account.id, apiKey: "" };
       const nextConfig = {
@@ -500,7 +570,7 @@ function App() {
   async function importCurrentPiAuth() {
     setAccountBusy(true);
     try {
-      const account = await importPiAuthAccount(newAccountProviderId, newAccountLabel);
+      const account = await importPiAuthAccount(newOAuthProviderId, newAccountLabel);
       await refreshAccounts();
       focusAccount(account);
       setNewAccountLabel("");
@@ -765,7 +835,7 @@ function App() {
                 >
                   <strong>{account.label}</strong>
                   {accountIdentityText(account) ? <span className="provider-meta">{accountIdentityText(account)}</span> : null}
-                  <span className="provider-meta">{OFFICIAL_PROVIDER_LABELS[account.providerId]} / {account.kind === "oauth" ? "OAuth" : "API Key"}</span>
+                  <span className="provider-meta">{accountProviderLabel(account.providerId, config.providers)} / {account.kind === "oauth" ? "OAuth" : "API Key"}</span>
                   <span className="provider-meta">{account.activeInPi ? t("activeInPi") : t("saved")}</span>
                 </button>
               ))}
@@ -779,18 +849,32 @@ function App() {
               accounts={accounts}
               filteredAccounts={filteredAccounts}
               selectedAccount={selectedAccount}
+              providers={config.providers}
+              customProviders={customProviderOptions}
               providerFilter={accountProviderFilter}
-              providerId={newAccountProviderId}
+              oauthProviderId={newOAuthProviderId}
+              apiKeyProviderSource={newApiKeyProviderSource}
+              apiKeyOfficialProviderId={newApiKeyOfficialProviderId}
+              apiKeyCustomProviderId={newApiKeyCustomProviderId}
+              apiKeyProviderId={newAccountProviderId}
+              baseUrl={newAccountBaseUrl}
               label={newAccountLabel}
               apiKey={newAccountApiKey}
               showApiKey={showAccountKey}
               busy={accountBusy}
               oauthState={oauthState}
+              addDialogRef={addAccountDialogRef}
+              addMode={newAccountMode}
               onProviderFilter={setAccountProviderFilter}
-              onProviderId={setNewAccountProviderId}
+              onOAuthProviderId={setNewOAuthProviderId}
+              onApiKeyProviderSource={setNewApiKeyProviderSource}
+              onApiKeyOfficialProviderId={setNewApiKeyOfficialProviderId}
+              onApiKeyCustomProviderId={setNewApiKeyCustomProviderId}
+              onBaseUrl={setNewAccountBaseUrl}
               onLabel={setNewAccountLabel}
               onApiKey={setNewAccountApiKey}
               onShowApiKey={setShowAccountKey}
+              onAddMode={setNewAccountMode}
               onAddOAuth={addOAuthAccount}
               onAddApiKey={addApiKeyAccount}
               onImport={importCurrentPiAuth}
@@ -1160,18 +1244,32 @@ function AccountsPanel({
   accounts,
   filteredAccounts,
   selectedAccount,
+  providers,
+  customProviders,
   providerFilter,
-  providerId,
+  oauthProviderId,
+  apiKeyProviderSource,
+  apiKeyOfficialProviderId,
+  apiKeyCustomProviderId,
+  apiKeyProviderId,
+  baseUrl,
   label,
   apiKey,
   showApiKey,
   busy,
   oauthState,
+  addDialogRef,
+  addMode,
   onProviderFilter,
-  onProviderId,
+  onOAuthProviderId,
+  onApiKeyProviderSource,
+  onApiKeyOfficialProviderId,
+  onApiKeyCustomProviderId,
+  onBaseUrl,
   onLabel,
   onApiKey,
   onShowApiKey,
+  onAddMode,
   onAddOAuth,
   onAddApiKey,
   onImport,
@@ -1186,17 +1284,31 @@ function AccountsPanel({
   accounts: AuthAccount[];
   filteredAccounts: AuthAccount[];
   selectedAccount?: AuthAccount;
+  providers: Provider[];
+  customProviders: Extract<Provider, { kind: "custom" }>[];
   providerFilter: AccountProviderFilter;
-  providerId: OfficialProviderId;
+  oauthProviderId: OfficialProviderId;
+  apiKeyProviderSource: ApiKeyProviderSource;
+  apiKeyOfficialProviderId: OfficialProviderId;
+  apiKeyCustomProviderId: string;
+  apiKeyProviderId: string;
+  baseUrl: string;
   label: string;
   apiKey: string;
   showApiKey: boolean;
   busy: boolean;
   oauthState: OAuthState;
-  onProviderId: (value: OfficialProviderId) => void;
+  addDialogRef: React.RefObject<HTMLDialogElement | null>;
+  addMode: AddAccountMode;
+  onOAuthProviderId: (value: OfficialProviderId) => void;
+  onApiKeyProviderSource: (value: ApiKeyProviderSource) => void;
+  onApiKeyOfficialProviderId: (value: OfficialProviderId) => void;
+  onApiKeyCustomProviderId: (value: string) => void;
+  onBaseUrl: (value: string) => void;
   onLabel: (value: string) => void;
   onApiKey: (value: string) => void;
   onShowApiKey: (value: boolean) => void;
+  onAddMode: (value: AddAccountMode) => void;
   onAddOAuth: (providerId?: OfficialProviderId) => void;
   onAddApiKey: () => void;
   onImport: () => void;
@@ -1209,13 +1321,24 @@ function AccountsPanel({
   onProviderFilter: (value: AccountProviderFilter) => void;
   t: ReturnType<typeof createTranslator>;
 }) {
-  const oauthSupported = supportsOAuthLogin(providerId);
+  const oauthSupported = supportsOAuthLogin(oauthProviderId);
   const codexSummary = codexAccountSummary(accounts);
+  const providerFilterOptions = accountProviderFilterOptions(accounts, providers);
+  const selectedCustomProvider = customProviders.find((provider) => provider.id === apiKeyCustomProviderId);
+  const apiKeyProviderLabel =
+    apiKeyProviderSource === "official"
+      ? OFFICIAL_PROVIDER_LABELS[apiKeyOfficialProviderId]
+      : selectedCustomProvider
+        ? providerLabel(selectedCustomProvider)
+        : t("custom");
   return (
     <div className="grid max-w-[1040px] gap-4">
       <div className="flex items-center justify-between gap-3">
         <h2 className="m-0 text-lg font-semibold">{t("accounts")}</h2>
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center justify-end gap-2">
+          <button type="button" className="primary flex items-center gap-2" onClick={() => addDialogRef.current?.showModal()} disabled={busy}>
+            <Plus size={15} /> {t("addAccount")}
+          </button>
           <button type="button" className="icon-button" title={t("refreshAccounts")} onClick={onRefresh} disabled={busy}>
             <RefreshCw size={15} />
           </button>
@@ -1225,55 +1348,109 @@ function AccountsPanel({
         </div>
       </div>
 
-      <section className="grid gap-4 rounded-md border p-4" style={{ borderColor: "var(--border)", background: "var(--surface)" }}>
-        <SectionTitle>{t("addAccount")}</SectionTitle>
-        <div className="editor-grid grid grid-cols-2 gap-4">
-          <Field label={t("provider")}>
-            <select value={providerId} onChange={(event) => onProviderId(event.target.value as OfficialProviderId)}>
-              {OFFICIAL_PROVIDER_IDS.map((id) => (
-                <option key={id} value={id}>
-                  {OFFICIAL_PROVIDER_LABELS[id]}
-                </option>
-              ))}
-            </select>
-          </Field>
-          <button type="button" className="primary flex items-center justify-center gap-2 self-end" onClick={() => onAddOAuth()} disabled={busy || oauthState.running || !oauthSupported}>
-            <Plus size={15} /> {oauthState.running && oauthState.providerId === providerId ? t("running") : t("addOAuthAccount")}
+      <dialog ref={addDialogRef} className="dialog model-dialog p-4" aria-labelledby="add-account-dialog-title">
+        <button type="button" className="dialog-close icon-button" aria-label={t("close")} onClick={() => addDialogRef.current?.close()}>
+          <X size={16} />
+        </button>
+        <h3 id="add-account-dialog-title" className="m-0 mb-4 text-base font-semibold">{t("addAccount")}</h3>
+        <div className="segmented mb-4" role="tablist" aria-label={t("addAccount")}>
+          <button type="button" role="tab" aria-selected={addMode === "oauth"} className={addMode === "oauth" ? "primary" : ""} onClick={() => onAddMode("oauth")}>
+            {t("oauthLogin")}
+          </button>
+          <button type="button" role="tab" aria-selected={addMode === "apiKey"} className={addMode === "apiKey" ? "primary" : ""} onClick={() => onAddMode("apiKey")}>
+            {t("apiKeyAccount")}
           </button>
         </div>
-        {oauthSupported ? <div className="muted">{t("oauthAccountHelp")}</div> : null}
-        <details className="advanced-panel">
-          <summary>{t("apiKeyAccount")}</summary>
-          <div className="grid gap-3 pt-3">
+        {addMode === "oauth" ? (
+          <div className="grid gap-4">
             <div className="editor-grid grid grid-cols-2 gap-4">
-              <Field label={t("accountNameOptional")}>
-                <input value={label} onChange={(event) => onLabel(event.target.value)} placeholder={OFFICIAL_PROVIDER_LABELS[providerId]} />
+              <Field label={t("provider")}>
+                <select value={oauthProviderId} onChange={(event) => onOAuthProviderId(event.target.value as OfficialProviderId)}>
+                  {OFFICIAL_PROVIDER_IDS.filter(supportsOAuthLogin).map((id) => (
+                    <option key={id} value={id}>
+                      {OFFICIAL_PROVIDER_LABELS[id]}
+                    </option>
+                  ))}
+                </select>
               </Field>
-              <SecretField value={apiKey} onChange={onApiKey} showKey={showApiKey} setShowKey={onShowApiKey} t={t} />
+              <Field label={t("accountNameOptional")}>
+                <input value={label} onChange={(event) => onLabel(event.target.value)} placeholder={OFFICIAL_PROVIDER_LABELS[oauthProviderId]} />
+              </Field>
             </div>
-            <div className="flex flex-wrap gap-2">
-              <button type="button" className="flex items-center gap-2" onClick={onAddApiKey} disabled={busy}>
+            <div className="muted">{t("oauthAccountHelp")}</div>
+            <div className="muted">{t("oauthMultiAccountHelp")}</div>
+            {oauthState.providerId === oauthProviderId && oauthState.events.length > 0 ? <OAuthEventList events={oauthState.events} t={t} /> : null}
+            <div className="flex flex-wrap justify-between gap-2">
+              <button type="button" className="flex items-center gap-2" onClick={onImport} disabled={busy}>
+                <Download size={15} /> {t("importPiAuth")}
+              </button>
+              <button type="button" className="primary flex items-center gap-2" onClick={() => onAddOAuth()} disabled={busy || oauthState.running || !oauthSupported}>
+                <Plus size={15} /> {oauthState.running && oauthState.providerId === oauthProviderId ? t("running") : t("addOAuthAccount")}
+              </button>
+            </div>
+          </div>
+        ) : (
+          <div className="grid gap-4">
+            <div className="segmented" role="group" aria-label={t("providerSource")}>
+              <button type="button" className={apiKeyProviderSource === "official" ? "primary" : ""} onClick={() => onApiKeyProviderSource("official")}>
+                {t("official")}
+              </button>
+              <button type="button" className={apiKeyProviderSource === "custom" ? "primary" : ""} onClick={() => onApiKeyProviderSource("custom")} disabled={customProviders.length === 0}>
+                {t("custom")}
+              </button>
+            </div>
+            <div className="editor-grid grid grid-cols-2 gap-4">
+              {apiKeyProviderSource === "official" ? (
+                <Field label={t("provider")}>
+                  <select value={apiKeyOfficialProviderId} onChange={(event) => onApiKeyOfficialProviderId(event.target.value as OfficialProviderId)}>
+                    {OFFICIAL_PROVIDER_IDS.map((id) => (
+                      <option key={id} value={id}>
+                        {OFFICIAL_PROVIDER_LABELS[id]}
+                      </option>
+                    ))}
+                  </select>
+                </Field>
+              ) : (
+                <Field label={t("provider")}>
+                  <select value={apiKeyCustomProviderId} onChange={(event) => onApiKeyCustomProviderId(event.target.value)} disabled={customProviders.length === 0}>
+                    {customProviders.map((provider) => (
+                      <option key={provider.id} value={provider.id}>
+                        {provider.name}
+                      </option>
+                    ))}
+                  </select>
+                </Field>
+              )}
+              <Field label={t("accountNameOptional")}>
+                <input value={label} onChange={(event) => onLabel(event.target.value)} placeholder={apiKeyProviderLabel} />
+              </Field>
+            </div>
+            <Field label={t("baseUrl")} required>
+              <input value={baseUrl} onChange={(event) => onBaseUrl(event.target.value)} />
+            </Field>
+            <SecretField value={apiKey} onChange={onApiKey} showKey={showApiKey} setShowKey={onShowApiKey} required t={t} />
+            <div className="muted">{apiKeyProviderSource === "custom" ? t("apiKeyCustomProviderHelp") : t("apiKeyOfficialProviderHelp")}</div>
+            <div className="flex justify-end gap-2">
+              <button type="button" onClick={() => addDialogRef.current?.close()}>{t("cancel")}</button>
+              <button type="button" className="primary flex items-center gap-2" onClick={onAddApiKey} disabled={busy || !apiKeyProviderId.trim() || !baseUrl.trim() || !apiKey.trim()}>
                 <Plus size={15} /> {t("addApiKeyAccount")}
               </button>
             </div>
-            <div className="muted">{t("apiKeyAccountHelp")}</div>
           </div>
-        </details>
-        <div className="flex flex-wrap gap-2">
-          <button type="button" className="flex items-center gap-2" onClick={onImport} disabled={busy}>
-            <Download size={15} /> {t("importPiAuth")}
-          </button>
-        </div>
-        {oauthSupported ? <div className="muted">{t("oauthMultiAccountHelp")}</div> : null}
-        {oauthState.providerId === providerId && oauthState.events.length > 0 ? <OAuthEventList events={oauthState.events} t={t} /> : null}
-        <CodexAccountReadiness
-          summary={codexSummary}
-          busy={busy}
-          oauthState={oauthState}
-          onAddFirstCodex={() => onAddOAuth("openai-codex")}
-          t={t}
-        />
-      </section>
+        )}
+      </dialog>
+
+      <CodexAccountReadiness
+        summary={codexSummary}
+        busy={busy}
+        oauthState={oauthState}
+        onAddFirstCodex={() => {
+          onAddMode("oauth");
+          onOAuthProviderId("openai-codex");
+          addDialogRef.current?.showModal();
+        }}
+        t={t}
+      />
 
       <section className="grid gap-3">
         <div className="flex flex-wrap items-center justify-between gap-3">
@@ -1282,9 +1459,9 @@ function AccountsPanel({
             <span>{t("accountFilter")}</span>
             <select value={providerFilter} onChange={(event) => onProviderFilter(event.target.value as AccountProviderFilter)}>
               <option value="all">{t("allAccounts")}</option>
-              {OFFICIAL_PROVIDER_IDS.map((id) => (
-                <option key={id} value={id}>
-                  {OFFICIAL_PROVIDER_LABELS[id]}
+              {providerFilterOptions.map((option) => (
+                <option key={option.id} value={option.id}>
+                  {option.label}
                 </option>
               ))}
             </select>
@@ -1299,7 +1476,8 @@ function AccountsPanel({
               onClick={() => onSelect(account.id)}
             >
               <strong>{account.label}</strong>
-              <span className="model-id">{accountIdentityText(account) || account.providerId}</span>
+              <span className="model-id">{accountIdentityText(account) || account.baseUrl || account.providerId}</span>
+              <span className="model-meta">{accountProviderLabel(account.providerId, providers)}</span>
               <span className="model-meta">{account.kind === "oauth" ? "OAuth" : "API Key"}</span>
               <span className="model-meta">{account.activeInPi ? t("activeInPi") : t("saved")}</span>
               <button
@@ -1322,7 +1500,8 @@ function AccountsPanel({
           <div>
             <h3 className="m-0 text-base font-semibold">{selectedAccount.label}</h3>
             {accountIdentityText(selectedAccount) ? <div className="muted">{accountIdentityText(selectedAccount)}</div> : null}
-            <div className="muted">{OFFICIAL_PROVIDER_LABELS[selectedAccount.providerId]} / {selectedAccount.kind === "oauth" ? "OAuth" : "API Key"} / {selectedAccount.id}</div>
+            <div className="muted">{accountProviderLabel(selectedAccount.providerId, providers)} / {selectedAccount.kind === "oauth" ? "OAuth" : "API Key"} / {selectedAccount.id}</div>
+            {selectedAccount.baseUrl ? <div className="model-id muted">{selectedAccount.baseUrl}</div> : null}
           </div>
           <div className="flex flex-wrap gap-2">
             <button type="button" onClick={() => onApply(selectedAccount)} disabled={busy}>{t("applyAccount")}</button>
@@ -2081,11 +2260,36 @@ function providerLabel(provider: Provider) {
   return piProviderId(provider);
 }
 
+function isOfficialProviderId(value: string): value is OfficialProviderId {
+  return (OFFICIAL_PROVIDER_IDS as readonly string[]).includes(value);
+}
+
+function accountProviderLabel(providerId: string, providers: Provider[]) {
+  if (isOfficialProviderId(providerId)) return OFFICIAL_PROVIDER_LABELS[providerId] ?? providerId;
+  const provider = providers.find((item) => piProviderId(item) === providerId || item.id === providerId);
+  return provider?.name || providerId;
+}
+
+function accountProviderFilterOptions(accounts: AuthAccount[], providers: Provider[]) {
+  const seen = new Set<string>();
+  return accounts
+    .map((account) => account.providerId)
+    .filter((providerId) => {
+      if (seen.has(providerId)) return false;
+      seen.add(providerId);
+      return true;
+    })
+    .sort((left, right) => accountProviderLabel(left, providers).localeCompare(accountProviderLabel(right, providers)))
+    .map((id) => ({ id, label: accountProviderLabel(id, providers) }));
+}
+
+function officialProviderBaseUrl(providerId: OfficialProviderId) {
+  return OFFICIAL_PROVIDER_BASE_URLS[providerId] ?? "";
+}
+
 function compareAccountsForDisplay(left: AuthAccount, right: AuthAccount) {
   if (left.activeInPi !== right.activeInPi) return left.activeInPi ? -1 : 1;
-  const provider = (OFFICIAL_PROVIDER_LABELS[left.providerId] ?? left.providerId).localeCompare(
-    OFFICIAL_PROVIDER_LABELS[right.providerId] ?? right.providerId,
-  );
+  const provider = left.providerId.localeCompare(right.providerId);
   if (provider !== 0) return provider;
   const label = left.label.localeCompare(right.label);
   if (label !== 0) return label;

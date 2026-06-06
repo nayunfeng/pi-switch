@@ -56,9 +56,9 @@ export async function submitOAuthManualCode(loginId: string, code: string) {
   });
 }
 
-export async function createApiKeyAccount(providerId: OfficialProviderId, label: string, apiKey: string) {
+export async function createApiKeyAccount(providerId: string, label: string, baseUrl: string, apiKey: string) {
   return tauriInvoke<AuthAccount>("create_api_key_account", {
-    input: { providerId, label, apiKey },
+    input: { providerId, label, baseUrl, apiKey },
   });
 }
 
