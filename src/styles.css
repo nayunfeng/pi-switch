@@ -275,6 +275,20 @@ label > span,
   padding: 12px;
 }
 
+.readiness-empty {
+  display: grid;
+  gap: 8px;
+  background: var(--surface);
+}
+
+.readiness-empty > strong {
+  color: var(--text);
+}
+
+.readiness-empty > button {
+  justify-self: start;
+}
+
 .model-check {
   display: flex;
   min-width: 0;

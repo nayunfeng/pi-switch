@@ -391,13 +391,14 @@ function App() {
     }
   }
 
-  async function addOAuthAccount() {
+  async function addOAuthAccount(providerId = newAccountProviderId) {
     if (oauthState.running) return;
     openedOAuthUrlsRef.current.clear();
-    setOAuthState({ providerId: newAccountProviderId, running: true, events: [] });
+    setNewAccountProviderId(providerId);
+    setOAuthState({ providerId, running: true, events: [] });
     setAccountBusy(true);
     try {
-      const result = await loginOfficialProviderOAuth(newAccountProviderId, newAccountLabel);
+      const result = await loginOfficialProviderOAuth(providerId, newAccountLabel);
       const applied = await applyAuthAccount(result.account.id);
       await refreshAccounts();
       focusAccount(applied);
@@ -1061,7 +1062,7 @@ function AccountsPanel({
   onLabel: (value: string) => void;
   onApiKey: (value: string) => void;
   onShowApiKey: (value: boolean) => void;
-  onAddOAuth: () => void;
+  onAddOAuth: (providerId?: OfficialProviderId) => void;
   onAddApiKey: () => void;
   onImport: () => void;
   onApply: (account: AuthAccount) => void;
@@ -1101,7 +1102,7 @@ function AccountsPanel({
           <SecretField value={apiKey} onChange={onApiKey} showKey={showApiKey} setShowKey={onShowApiKey} t={t} />
         </div>
         <div className="flex flex-wrap gap-2">
-          <button type="button" className="flex items-center gap-2" onClick={onAddOAuth} disabled={busy || oauthState.running || !oauthSupported}>
+          <button type="button" className="flex items-center gap-2" onClick={() => onAddOAuth()} disabled={busy || oauthState.running || !oauthSupported}>
             <Plus size={15} /> {oauthState.running && oauthState.providerId === providerId ? t("running") : t("addOAuthAccount")}
           </button>
           <button type="button" className="flex items-center gap-2" onClick={onAddApiKey} disabled={busy}>
@@ -1113,7 +1114,13 @@ function AccountsPanel({
         </div>
         {oauthSupported ? <div className="muted">{t("oauthMultiAccountHelp")}</div> : null}
         {oauthState.providerId === providerId && oauthState.events.length > 0 ? <OAuthEventList events={oauthState.events} t={t} /> : null}
-        <CodexAccountReadiness summary={codexSummary} t={t} />
+        <CodexAccountReadiness
+          summary={codexSummary}
+          busy={busy}
+          oauthState={oauthState}
+          onAddFirstCodex={() => onAddOAuth("openai-codex")}
+          t={t}
+        />
       </section>
 
       <section className="grid gap-3">
@@ -1199,7 +1206,19 @@ type CodexAccountSummary = {
   ready: boolean;
 };
 
-function CodexAccountReadiness({ summary, t }: { summary: CodexAccountSummary; t: ReturnType<typeof createTranslator> }) {
+function CodexAccountReadiness({
+  summary,
+  busy,
+  oauthState,
+  onAddFirstCodex,
+  t,
+}: {
+  summary: CodexAccountSummary;
+  busy: boolean;
+  oauthState: OAuthState;
+  onAddFirstCodex: () => void;
+  t: ReturnType<typeof createTranslator>;
+}) {
   const checks = [
     {
       label: t("codexCheckSaved"),
@@ -1235,6 +1254,15 @@ function CodexAccountReadiness({ summary, t }: { summary: CodexAccountSummary; t
         <span className="model-meta">{t("codexAppliedDistinctIdentities")}: {summary.appliedDistinctIdentityCount}</span>
         <span className="model-meta">{t("codexActiveAccount")}: {summary.activeLabel || t("none")}</span>
       </div>
+      {summary.oauthCount === 0 ? (
+        <div className="empty-state readiness-empty">
+          <strong>{t("codexNoAccountsTitle")}</strong>
+          <span>{t("codexNoAccountsHelp")}</span>
+          <button type="button" className="flex items-center gap-2" onClick={onAddFirstCodex} disabled={busy || oauthState.running}>
+            <Plus size={15} /> {oauthState.running && oauthState.providerId === "openai-codex" ? t("running") : t("codexAddFirstAccount")}
+          </button>
+        </div>
+      ) : null}
       <div className="readiness-checks">
         {checks.map((check) => (
           <div key={check.label} className={`readiness-check ${check.done ? "done" : ""}`}>
