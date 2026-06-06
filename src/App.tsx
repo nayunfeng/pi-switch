@@ -352,6 +352,7 @@ function App() {
         providers: config.providers.map((item) => (item.id === provider.id ? nextProvider : item)),
       };
       updateConfig(nextConfig);
+      await saveAppConfig(nextConfig);
       await applyProviderToPi(nextConfig, provider.id);
       await refreshAccounts();
       showToast("success", t("oauthLoginSuccess"));
@@ -413,7 +414,15 @@ function App() {
       const label = `${provider.name || OFFICIAL_PROVIDER_LABELS[provider.providerId]} API Key`;
       const account = await createApiKeyAccount(provider.providerId, label, provider.apiKey);
       await refreshAccounts();
-      updateActiveProvider({ ...provider, authMode: "account", authAccountId: account.id });
+      const nextProvider = { ...provider, authMode: "account" as const, authAccountId: account.id };
+      const nextConfig = {
+        ...config,
+        providers: config.providers.map((item) => (item.id === provider.id ? nextProvider : item)),
+      };
+      updateConfig(nextConfig);
+      await saveAppConfig(nextConfig);
+      await applyAuthAccount(account.id);
+      await refreshAccounts();
       showToast("success", t("providerApiKeySavedAsAccount"));
     } catch (err) {
       showError(err);
