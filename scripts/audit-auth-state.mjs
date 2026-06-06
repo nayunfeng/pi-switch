@@ -23,18 +23,59 @@ function credentialSummary(credential) {
   };
 }
 
+function isOAuthCredential(credential) {
+  return credential?.type === "oauth";
+}
+
+function sameCredential(left, right) {
+  return JSON.stringify(left) === JSON.stringify(right);
+}
+
+function matchingAccount(accounts, providerId, currentCredential) {
+  const candidates = accounts.filter((account) => account.providerId === providerId);
+  const exact = candidates.find((account) => sameCredential(account.credential, currentCredential));
+  if (exact) return { account: exact, match: "exact" };
+
+  if (!isOAuthCredential(currentCredential)) return undefined;
+  const latestApplied = candidates
+    .filter((account) => isOAuthCredential(account.credential) && account.lastAppliedAt)
+    .sort((left, right) => String(right.lastAppliedAt).localeCompare(String(left.lastAppliedAt)))[0];
+  return latestApplied ? { account: latestApplied, match: "latestAppliedOAuth" } : undefined;
+}
+
 const accounts = readJson(paths.accounts);
 const config = readJson(paths.config);
 const piAuth = readJson(paths.piAuth);
+const savedAccounts = accounts?.accounts ?? [];
 
-const accountRows = (accounts?.accounts ?? []).map((account) => ({
-  id: account.id,
-  label: account.label,
-  providerId: account.providerId,
-  kind: account.kind,
-  lastAppliedAt: account.lastAppliedAt,
-  credential: credentialSummary(account.credential),
-}));
+const matchesByProvider = Object.fromEntries(
+  Object.entries(piAuth ?? {}).map(([providerId, credential]) => {
+    const match = matchingAccount(savedAccounts, providerId, credential);
+    return [
+      providerId,
+      match
+        ? {
+            accountId: match.account.id,
+            label: match.account.label,
+            match: match.match,
+          }
+        : null,
+    ];
+  }),
+);
+
+const accountRows = savedAccounts.map((account) => {
+  const active = matchesByProvider[account.providerId]?.accountId === account.id;
+  return {
+    id: account.id,
+    label: account.label,
+    providerId: account.providerId,
+    kind: account.kind,
+    activeInPi: active,
+    lastAppliedAt: account.lastAppliedAt,
+    credential: credentialSummary(account.credential),
+  };
+});
 
 const configRows = (config?.providers ?? []).map((provider) => ({
   id: provider.id,
@@ -67,5 +108,6 @@ console.log(JSON.stringify({
     schemaVersion: config?.schemaVersion,
     providers: configRows,
   },
+  activeMatches: matchesByProvider,
   piAuth: piAuthRows,
 }, null, 2));
