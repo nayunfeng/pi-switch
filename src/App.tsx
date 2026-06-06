@@ -413,7 +413,7 @@ function App() {
       const label = `${provider.name || OFFICIAL_PROVIDER_LABELS[provider.providerId]} API Key`;
       const account = await createApiKeyAccount(provider.providerId, label, provider.apiKey);
       await refreshAccounts();
-      const nextProvider = { ...provider, authMode: "account" as const, authAccountId: account.id };
+      const nextProvider = { ...provider, authMode: "account" as const, authAccountId: account.id, apiKey: "" };
       const nextConfig = {
         ...config,
         providers: config.providers.map((item) => (item.id === provider.id ? nextProvider : item)),
