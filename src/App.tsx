@@ -235,6 +235,18 @@ function App() {
     }
   }
 
+  async function refreshAccountState() {
+    setAccountBusy(true);
+    try {
+      await refreshAccounts();
+      showToast("success", t("accountsRefreshed"));
+    } catch (err) {
+      showError(err);
+    } finally {
+      setAccountBusy(false);
+    }
+  }
+
   function updateActiveProvider(provider: Provider) {
     updateConfig({
       ...config,
@@ -739,6 +751,7 @@ function App() {
               onAddOAuth={addOAuthAccount}
               onAddApiKey={addApiKeyAccount}
               onImport={importCurrentPiAuth}
+              onRefresh={refreshAccountState}
               onApply={applySelectedAccount}
               onRename={renameSelectedAccount}
               onDuplicate={duplicateSelectedAccount}
@@ -1048,6 +1061,7 @@ function AccountsPanel({
   onAddOAuth,
   onAddApiKey,
   onImport,
+  onRefresh,
   onApply,
   onRename,
   onDuplicate,
@@ -1072,6 +1086,7 @@ function AccountsPanel({
   onAddOAuth: (providerId?: OfficialProviderId) => void;
   onAddApiKey: () => void;
   onImport: () => void;
+  onRefresh: () => void;
   onApply: (account: AuthAccount) => void;
   onRename: (account: AuthAccount) => void;
   onDuplicate: (account: AuthAccount) => void;
@@ -1086,9 +1101,14 @@ function AccountsPanel({
     <div className="grid max-w-[1040px] gap-4">
       <div className="flex items-center justify-between gap-3">
         <h2 className="m-0 text-lg font-semibold">{t("accounts")}</h2>
-        <span className="rounded-full border px-3 py-1 text-xs" style={{ borderColor: "var(--border)", color: "var(--muted)" }}>
-          {filteredAccounts.length}/{accounts.length}
-        </span>
+        <div className="flex items-center gap-2">
+          <button type="button" className="icon-button" title={t("refreshAccounts")} onClick={onRefresh} disabled={busy}>
+            <RefreshCw size={15} />
+          </button>
+          <span className="rounded-full border px-3 py-1 text-xs" style={{ borderColor: "var(--border)", color: "var(--muted)" }}>
+            {filteredAccounts.length}/{accounts.length}
+          </span>
+        </div>
       </div>
 
       <section className="grid gap-4 rounded-md border p-4" style={{ borderColor: "var(--border)", background: "var(--surface)" }}>
