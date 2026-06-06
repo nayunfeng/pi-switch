@@ -984,6 +984,54 @@ fn normalize_account_label(
     format!("{provider_id} {suffix}")
 }
 
+fn oauth_account_label_from_identity(credential: &Value) -> Option<String> {
+    if !credential_is_oauth(credential) {
+        return None;
+    }
+    let identities = account_identity(credential);
+    [
+        "oauth.email",
+        "user.email",
+        "email",
+        "oauth.chatgptAccountId",
+        "oauth.accountId",
+        "account.id",
+        "accountId",
+        "oauth.chatgptUserId",
+        "oauth.userId",
+        "user.id",
+        "oauth.sub",
+        "sub",
+        "subject",
+    ]
+    .iter()
+    .find_map(|field| {
+        identities
+            .iter()
+            .find(|identity| identity.field.eq_ignore_ascii_case(field))
+            .map(|identity| identity.value.trim().to_string())
+            .filter(|value| !value.is_empty())
+    })
+}
+
+fn normalize_account_label_for_credential(
+    label: Option<&str>,
+    provider_id: &str,
+    kind: AuthAccountKind,
+    credential: &Value,
+) -> String {
+    let trimmed = label.unwrap_or_default().trim();
+    if !trimmed.is_empty() {
+        return trimmed.to_string();
+    }
+    if kind == AuthAccountKind::OAuth {
+        if let Some(identity_label) = oauth_account_label_from_identity(credential) {
+            return identity_label;
+        }
+    }
+    normalize_account_label(None, provider_id, kind)
+}
+
 fn unique_account_label(store: &AccountsStore, base_label: &str) -> String {
     let base = base_label.trim();
     if base.is_empty() {
@@ -1551,7 +1599,12 @@ fn import_pi_auth_account(input: ImportPiAuthAccountInput) -> AppResult<AuthAcco
         _ => return Err(validation_error("无法识别该供应商认证类型")),
     };
     let mut store = load_accounts_store_from_path(&paths.accounts_file)?;
-    let label = normalize_account_label(input.label.as_deref(), &provider_id, kind.clone());
+    let label = normalize_account_label_for_credential(
+        input.label.as_deref(),
+        &provider_id,
+        kind.clone(),
+        &credential,
+    );
     let mut account = upsert_auth_account(&mut store, provider_id, label, kind, credential)?;
     save_accounts_store_to_path(&paths.accounts_file, &store)?;
     account.active_in_pi = true;
@@ -1898,10 +1951,11 @@ async fn login_official_provider_oauth(
         .cloned()
         .ok_or_else(|| AppError::new("OAUTH_LOGIN_FAILED", "OAuth 登录未生成凭证"))?;
     let mut store = load_accounts_store()?;
-    let label = normalize_account_label(
+    let label = normalize_account_label_for_credential(
         input.label.as_deref(),
         &input.provider_id,
         AuthAccountKind::OAuth,
+        &credential,
     );
     let account = upsert_auth_account(
         &mut store,
@@ -3507,6 +3561,43 @@ mod tests {
         assert_eq!(first.label, "openai-codex OAuth");
         assert_eq!(second.label, "openai-codex OAuth 2");
         assert_eq!(third.label, "openai-codex OAuth 3");
+    }
+
+    #[test]
+    fn oauth_default_label_prefers_safe_identity() {
+        let credential = json!({
+            "type": "oauth",
+            "user": {
+                "email": "codex@example.test"
+            },
+            "accessToken": "token-a"
+        });
+
+        let label = normalize_account_label_for_credential(
+            None,
+            "openai-codex",
+            AuthAccountKind::OAuth,
+            &credential,
+        );
+
+        assert_eq!(label, "codex@example.test");
+    }
+
+    #[test]
+    fn oauth_default_label_falls_back_without_identity() {
+        let credential = json!({
+            "type": "oauth",
+            "accessToken": "token-a"
+        });
+
+        let label = normalize_account_label_for_credential(
+            None,
+            "openai-codex",
+            AuthAccountKind::OAuth,
+            &credential,
+        );
+
+        assert_eq!(label, "openai-codex OAuth");
     }
 
     #[test]

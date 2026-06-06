@@ -390,8 +390,7 @@ function App() {
     openedOAuthUrlsRef.current.clear();
     setOAuthState({ providerId: provider.providerId, running: true, events: [] });
     try {
-      const label = `${OFFICIAL_PROVIDER_LABELS[provider.providerId]} OAuth`;
-      const result = await loginOfficialProviderOAuth(provider.providerId, label);
+      const result = await loginOfficialProviderOAuth(provider.providerId);
       await refreshAccounts();
       const nextProvider = { ...provider, authMode: "account" as const, authAccountId: result.account.id };
       const nextConfig = {
@@ -417,7 +416,7 @@ function App() {
     setOAuthState({ providerId, running: true, events: [] });
     setAccountBusy(true);
     try {
-      const result = await loginOfficialProviderOAuth(providerId, newAccountLabel);
+      const result = await loginOfficialProviderOAuth(providerId);
       const applied = await applyAuthAccount(result.account.id);
       await refreshAccounts();
       focusAccount(applied);
@@ -1113,7 +1112,7 @@ function AccountsPanel({
 
       <section className="grid gap-4 rounded-md border p-4" style={{ borderColor: "var(--border)", background: "var(--surface)" }}>
         <SectionTitle>{t("addAccount")}</SectionTitle>
-        <div className="editor-grid grid grid-cols-3 gap-4">
+        <div className="editor-grid grid grid-cols-2 gap-4">
           <Field label={t("provider")}>
             <select value={providerId} onChange={(event) => onProviderId(event.target.value as OfficialProviderId)}>
               {OFFICIAL_PROVIDER_IDS.map((id) => (
@@ -1123,18 +1122,29 @@ function AccountsPanel({
               ))}
             </select>
           </Field>
-          <Field label={t("accountName")}>
-            <input value={label} onChange={(event) => onLabel(event.target.value)} placeholder={OFFICIAL_PROVIDER_LABELS[providerId]} />
-          </Field>
-          <SecretField value={apiKey} onChange={onApiKey} showKey={showApiKey} setShowKey={onShowApiKey} t={t} />
-        </div>
-        <div className="flex flex-wrap gap-2">
-          <button type="button" className="flex items-center gap-2" onClick={() => onAddOAuth()} disabled={busy || oauthState.running || !oauthSupported}>
+          <button type="button" className="primary flex items-center justify-center gap-2 self-end" onClick={() => onAddOAuth()} disabled={busy || oauthState.running || !oauthSupported}>
             <Plus size={15} /> {oauthState.running && oauthState.providerId === providerId ? t("running") : t("addOAuthAccount")}
           </button>
-          <button type="button" className="flex items-center gap-2" onClick={onAddApiKey} disabled={busy}>
-            <Plus size={15} /> {t("addApiKeyAccount")}
-          </button>
+        </div>
+        {oauthSupported ? <div className="muted">{t("oauthAccountHelp")}</div> : null}
+        <details className="advanced-panel">
+          <summary>{t("apiKeyAccount")}</summary>
+          <div className="grid gap-3 pt-3">
+            <div className="editor-grid grid grid-cols-2 gap-4">
+              <Field label={t("accountNameOptional")}>
+                <input value={label} onChange={(event) => onLabel(event.target.value)} placeholder={OFFICIAL_PROVIDER_LABELS[providerId]} />
+              </Field>
+              <SecretField value={apiKey} onChange={onApiKey} showKey={showApiKey} setShowKey={onShowApiKey} t={t} />
+            </div>
+            <div className="flex flex-wrap gap-2">
+              <button type="button" className="flex items-center gap-2" onClick={onAddApiKey} disabled={busy}>
+                <Plus size={15} /> {t("addApiKeyAccount")}
+              </button>
+            </div>
+            <div className="muted">{t("apiKeyAccountHelp")}</div>
+          </div>
+        </details>
+        <div className="flex flex-wrap gap-2">
           <button type="button" className="flex items-center gap-2" onClick={onImport} disabled={busy}>
             <Download size={15} /> {t("importPiAuth")}
           </button>
