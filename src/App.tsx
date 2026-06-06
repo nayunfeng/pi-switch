@@ -1078,6 +1078,7 @@ function AccountsPanel({
             <Download size={15} /> {t("importPiAuth")}
           </button>
         </div>
+        {oauthSupported ? <div className="muted">{t("oauthMultiAccountHelp")}</div> : null}
         {oauthState.providerId === providerId && oauthState.events.length > 0 ? <OAuthEventList events={oauthState.events} t={t} /> : null}
         <CodexAccountReadiness summary={codexSummary} t={t} />
       </section>
