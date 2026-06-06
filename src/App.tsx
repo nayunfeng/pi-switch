@@ -1,4 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { listen } from "@tauri-apps/api/event";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import {
   Check,
   CirclePlay,
@@ -15,17 +17,27 @@ import {
   X,
 } from "lucide-react";
 import {
+  applyAuthAccount,
   applyProviderToPi,
+  createApiKeyAccount,
+  deleteAuthAccount,
+  duplicateAuthAccount,
   fetchCustomProviderModels,
+  importPiAuthAccount,
+  loginOfficialProviderOAuth,
+  loadAuthAccounts,
   listPiModels,
   loadAppConfig,
+  renameAuthAccount,
   saveAppConfig,
+  submitOAuthManualCode,
   testProvider as runTestProvider,
 } from "./commands";
 import {
   API_PRESETS,
   AppConfig,
   AppError,
+  AuthAccount,
   AuthMode,
   CompatConfig,
   createCustomProvider,
@@ -38,10 +50,12 @@ import {
   OFFICIAL_PROVIDER_IDS,
   OFFICIAL_PROVIDER_LABELS,
   OfficialProviderId,
+  OAuthLoginEvent,
   piProviderId,
   PiModelInfo,
   Provider,
   ResolvedPaths,
+  supportsOAuthLogin,
   ThemeMode,
   ThinkingLevel,
   validationErrors,
@@ -58,6 +72,15 @@ type ToastState = {
   message: string;
 };
 
+type OAuthState = {
+  providerId?: OfficialProviderId;
+  running: boolean;
+  events: OAuthLoginEvent[];
+};
+
+type MainTab = "providers" | "accounts";
+type AccountProviderFilter = "all" | OfficialProviderId;
+
 type ModelDraft = {
   model: ModelConfig;
   index?: number;
@@ -67,7 +90,16 @@ const EMPTY_MODEL_DRAFT: ModelDraft = { model: createModel() };
 const THINKING_LEVELS: ThinkingLevel[] = ["off", "minimal", "low", "medium", "high", "xhigh"];
 
 function App() {
-  const [config, setConfig] = useState<AppConfig>(() => normalizeConfig({ schemaVersion: 2, theme: "system", providers: [] }));
+  const [config, setConfig] = useState<AppConfig>(() => normalizeConfig({ schemaVersion: 3, theme: "system", providers: [] }));
+  const [accounts, setAccounts] = useState<AuthAccount[]>([]);
+  const [activeTab, setActiveTab] = useState<MainTab>("providers");
+  const [selectedAccountId, setSelectedAccountId] = useState<string>();
+  const [accountProviderFilter, setAccountProviderFilter] = useState<AccountProviderFilter>("all");
+  const [newAccountProviderId, setNewAccountProviderId] = useState<OfficialProviderId>("openai-codex");
+  const [newAccountLabel, setNewAccountLabel] = useState("");
+  const [newAccountApiKey, setNewAccountApiKey] = useState("");
+  const [showAccountKey, setShowAccountKey] = useState(false);
+  const [accountBusy, setAccountBusy] = useState(false);
   const [paths, setPaths] = useState<ResolvedPaths>();
   const [loading, setLoading] = useState(true);
   const [showKey, setShowKey] = useState(false);
@@ -79,15 +111,22 @@ function App() {
   const [fetching, setFetching] = useState(false);
   const [piModels, setPiModels] = useState<PiModelInfo[]>([]);
   const [piModelsLoading, setPiModelsLoading] = useState(false);
+  const [oauthState, setOAuthState] = useState<OAuthState>({ running: false, events: [] });
   const [piModelSearch, setPiModelSearch] = useState("");
   const [modelDraft, setModelDraft] = useState<ModelDraft>(EMPTY_MODEL_DRAFT);
   const deleteDialogRef = useRef<HTMLDialogElement>(null);
   const modelDialogRef = useRef<HTMLDialogElement>(null);
   const providerAdvancedDialogRef = useRef<HTMLDialogElement>(null);
   const outputDialogRef = useRef<HTMLDialogElement>(null);
+  const openedOAuthUrlsRef = useRef<Set<string>>(new Set());
   const language = config.language ?? systemLanguage();
   const t = useMemo(() => createTranslator(language), [language]);
   const activeProvider = config.providers.find((provider) => provider.id === config.activeProviderId);
+  const filteredAccounts = useMemo(
+    () => (accountProviderFilter === "all" ? accounts : accounts.filter((account) => account.providerId === accountProviderFilter)),
+    [accounts, accountProviderFilter],
+  );
+  const selectedAccount = filteredAccounts.find((account) => account.id === selectedAccountId) ?? filteredAccounts[0];
   const errors = validationErrors(activeProvider);
 
   useEffect(() => {
@@ -98,7 +137,53 @@ function App() {
       })
       .catch((err) => showError(err))
       .finally(() => setLoading(false));
+    refreshAccounts().catch((err) => showError(err));
   }, []);
+
+  useEffect(() => {
+    if (!selectedAccountId && filteredAccounts.length > 0) {
+      setSelectedAccountId(filteredAccounts[0].id);
+      return;
+    }
+    if (selectedAccountId && filteredAccounts.length > 0 && !filteredAccounts.some((account) => account.id === selectedAccountId)) {
+      setSelectedAccountId(filteredAccounts[0].id);
+    }
+    if (filteredAccounts.length === 0) {
+      setSelectedAccountId(undefined);
+    }
+  }, [filteredAccounts, selectedAccountId]);
+
+  useEffect(() => {
+    let mounted = true;
+    let unlisten: (() => void) | undefined;
+    listen<OAuthLoginEvent>("oauth-login-event", (event) => {
+      if (!mounted) return;
+      const urlToOpen = event.payload.type === "auth" ? event.payload.url : event.payload.type === "deviceCode" ? event.payload.verificationUri : undefined;
+      if (urlToOpen && !openedOAuthUrlsRef.current.has(urlToOpen)) {
+        openedOAuthUrlsRef.current.add(urlToOpen);
+        openUrl(urlToOpen).catch((err) => showError(err));
+      }
+      if (event.payload.type === "manualCode") {
+        const code = window.prompt(event.payload.message ?? t("oauthManualCodePrompt"))?.trim();
+        if (code) {
+          submitOAuthManualCode(event.payload.loginId, code).catch((err) => showError(err));
+        }
+      }
+      setOAuthState((state) => ({
+        ...state,
+        providerId: event.payload.providerId,
+        events: [...state.events, event.payload].slice(-8),
+      }));
+    })
+      .then((cleanup) => {
+        unlisten = cleanup;
+      })
+      .catch((err) => showError(err));
+    return () => {
+      mounted = false;
+      unlisten?.();
+    };
+  }, [t]);
 
   useEffect(() => {
     if (!toast) return;
@@ -135,11 +220,28 @@ function App() {
     showToast("error", formatError(err, t));
   }
 
+  async function refreshAccounts() {
+    const store = await loadAuthAccounts();
+    setAccounts(store.accounts);
+  }
+
   function updateActiveProvider(provider: Provider) {
     updateConfig({
       ...config,
       providers: config.providers.map((item) => (item.id === provider.id ? provider : item)),
     });
+  }
+
+  function manageAccountsForProvider(providerId: OfficialProviderId) {
+    setNewAccountProviderId(providerId);
+    setAccountProviderFilter(providerId);
+    setActiveTab("accounts");
+  }
+
+  function focusAccount(account: AuthAccount) {
+    setAccountProviderFilter(account.providerId);
+    setNewAccountProviderId(account.providerId);
+    setSelectedAccountId(account.id);
   }
 
   function addProvider() {
@@ -194,6 +296,7 @@ function App() {
     try {
       await applyProviderToPi(config, activeProvider.id);
       showToast("success", t("applySuccess"));
+      await refreshAccounts();
     } catch (err) {
       showError(err);
     }
@@ -232,6 +335,160 @@ function App() {
       showError(err);
     } finally {
       setPiModelsLoading(false);
+    }
+  }
+
+  async function loginOAuthProvider(provider: Extract<Provider, { kind: "official" }>) {
+    if (oauthState.running) return;
+    openedOAuthUrlsRef.current.clear();
+    setOAuthState({ providerId: provider.providerId, running: true, events: [] });
+    try {
+      const label = `${OFFICIAL_PROVIDER_LABELS[provider.providerId]} OAuth`;
+      const result = await loginOfficialProviderOAuth(provider.providerId, label);
+      await refreshAccounts();
+      updateActiveProvider({ ...provider, authMode: "account", authAccountId: result.account.id });
+      showToast("success", t("oauthLoginSuccess"));
+    } catch (err) {
+      showError(err);
+    } finally {
+      setOAuthState((state) => ({ ...state, running: false }));
+    }
+  }
+
+  async function addOAuthAccount() {
+    if (oauthState.running) return;
+    openedOAuthUrlsRef.current.clear();
+    setOAuthState({ providerId: newAccountProviderId, running: true, events: [] });
+    setAccountBusy(true);
+    try {
+      const result = await loginOfficialProviderOAuth(newAccountProviderId, newAccountLabel);
+      await refreshAccounts();
+      focusAccount(result.account);
+      setNewAccountLabel("");
+      showToast("success", t("accountSaved"));
+    } catch (err) {
+      showError(err);
+    } finally {
+      setOAuthState((state) => ({ ...state, running: false }));
+      setAccountBusy(false);
+    }
+  }
+
+  async function addApiKeyAccount() {
+    if (!newAccountApiKey.trim()) {
+      showToast("error", t("required"));
+      return;
+    }
+    setAccountBusy(true);
+    try {
+      const account = await createApiKeyAccount(newAccountProviderId, newAccountLabel, newAccountApiKey);
+      await refreshAccounts();
+      focusAccount(account);
+      setNewAccountLabel("");
+      setNewAccountApiKey("");
+      showToast("success", t("accountSaved"));
+    } catch (err) {
+      showError(err);
+    } finally {
+      setAccountBusy(false);
+    }
+  }
+
+  async function saveProviderApiKeyAsAccount(provider: Extract<Provider, { kind: "official" }>) {
+    if (!provider.apiKey.trim()) {
+      showToast("error", t("required"));
+      return;
+    }
+    setAccountBusy(true);
+    try {
+      const label = `${provider.name || OFFICIAL_PROVIDER_LABELS[provider.providerId]} API Key`;
+      const account = await createApiKeyAccount(provider.providerId, label, provider.apiKey);
+      await refreshAccounts();
+      updateActiveProvider({ ...provider, authMode: "account", authAccountId: account.id });
+      showToast("success", t("providerApiKeySavedAsAccount"));
+    } catch (err) {
+      showError(err);
+    } finally {
+      setAccountBusy(false);
+    }
+  }
+
+  async function importCurrentPiAuth() {
+    setAccountBusy(true);
+    try {
+      const account = await importPiAuthAccount(newAccountProviderId, newAccountLabel);
+      await refreshAccounts();
+      focusAccount(account);
+      setNewAccountLabel("");
+      showToast("success", t("accountSaved"));
+    } catch (err) {
+      showError(err);
+    } finally {
+      setAccountBusy(false);
+    }
+  }
+
+  async function applySelectedAccount(account: AuthAccount) {
+    setAccountBusy(true);
+    try {
+      const updated = await applyAuthAccount(account.id);
+      await refreshAccounts();
+      setSelectedAccountId(updated.id);
+      showToast("success", t("accountApplied"));
+    } catch (err) {
+      showError(err);
+    } finally {
+      setAccountBusy(false);
+    }
+  }
+
+  async function renameSelectedAccount(account: AuthAccount) {
+    const label = window.prompt(t("renameAccount"), account.label)?.trim();
+    if (!label) return;
+    setAccountBusy(true);
+    try {
+      const updated = await renameAuthAccount(account.id, label);
+      await refreshAccounts();
+      setSelectedAccountId(updated.id);
+      showToast("success", t("accountSaved"));
+    } catch (err) {
+      showError(err);
+    } finally {
+      setAccountBusy(false);
+    }
+  }
+
+  async function duplicateSelectedAccount(account: AuthAccount) {
+    setAccountBusy(true);
+    try {
+      const duplicate = await duplicateAuthAccount(account.id);
+      await refreshAccounts();
+      focusAccount(duplicate);
+      showToast("success", t("accountSaved"));
+    } catch (err) {
+      showError(err);
+    } finally {
+      setAccountBusy(false);
+    }
+  }
+
+  async function deleteSelectedAccount(account: AuthAccount) {
+    const message = account.activeInPi
+      ? `${t("deleteActiveAccountConfirm")} "${account.label}"?`
+      : `${t("deleteAccountConfirm")} "${account.label}"?`;
+    if (!window.confirm(message)) return;
+    setAccountBusy(true);
+    try {
+      await deleteAuthAccount(account.id);
+      const loaded = await loadAppConfig();
+      setConfig(normalizeConfig(loaded.config));
+      setPaths(loaded.resolvedPaths);
+      await refreshAccounts();
+      showToast("success", t("accountDeleted"));
+    } catch (err) {
+      showError(err);
+    } finally {
+      setAccountBusy(false);
     }
   }
 
@@ -344,40 +601,94 @@ function App() {
 
       <main className="workspace grid min-h-0 grid-cols-[280px_minmax(0,1fr)]">
         <aside className="min-h-0 border-r p-4" style={{ borderColor: "var(--border)", background: "var(--surface-muted)" }}>
-          <div className="mb-3 flex items-center justify-between">
-            <h2 className="m-0 text-base font-semibold">{t("providers")}</h2>
-          </div>
           <div className="mb-3 grid grid-cols-2 gap-2">
-            <button type="button" className="flex items-center justify-center gap-2" onClick={addProvider}>
-              <Plus size={15} /> {t("newProvider")}
+            <button type="button" className={activeTab === "providers" ? "primary" : ""} onClick={() => setActiveTab("providers")}>
+              {t("providers")}
             </button>
-            <button type="button" className="flex items-center justify-center gap-2" onClick={duplicateProvider} disabled={!activeProvider}>
-              <Copy size={15} /> {t("duplicate")}
-            </button>
-            <button type="button" className="danger col-span-2 flex items-center justify-center gap-2" onClick={() => deleteDialogRef.current?.showModal()} disabled={!activeProvider}>
-              <Trash2 size={15} /> {t("delete")}
+            <button type="button" className={activeTab === "accounts" ? "primary" : ""} onClick={() => setActiveTab("accounts")}>
+              {t("accounts")}
             </button>
           </div>
-          <div className="grid gap-2">
-            {config.providers.map((provider) => (
-              <button
-                type="button"
-                key={provider.id}
-                className={`provider-item ${provider.id === config.activeProviderId ? "active" : ""}`}
-                onClick={() => updateConfig({ ...config, activeProviderId: provider.id })}
-              >
-                <strong>{provider.name}</strong>
-                <span className="provider-meta">
-                  {provider.kind === "official" ? t("official") : t("custom")} / {providerLabel(provider)}
-                </span>
-                <span className="provider-meta">{provider.defaultModelId || t("noDefaultModel")}</span>
-              </button>
-            ))}
+          <div className="mb-3 flex items-center justify-between">
+            <h2 className="m-0 text-base font-semibold">{activeTab === "providers" ? t("providers") : t("accounts")}</h2>
           </div>
+          {activeTab === "providers" ? (
+            <>
+              <div className="mb-3 grid grid-cols-2 gap-2">
+                <button type="button" className="flex items-center justify-center gap-2" onClick={addProvider}>
+                  <Plus size={15} /> {t("newProvider")}
+                </button>
+                <button type="button" className="flex items-center justify-center gap-2" onClick={duplicateProvider} disabled={!activeProvider}>
+                  <Copy size={15} /> {t("duplicate")}
+                </button>
+                <button type="button" className="danger col-span-2 flex items-center justify-center gap-2" onClick={() => deleteDialogRef.current?.showModal()} disabled={!activeProvider}>
+                  <Trash2 size={15} /> {t("delete")}
+                </button>
+              </div>
+              <div className="grid gap-2">
+                {config.providers.map((provider) => (
+                  <button
+                    type="button"
+                    key={provider.id}
+                    className={`provider-item ${provider.id === config.activeProviderId ? "active" : ""}`}
+                    onClick={() => updateConfig({ ...config, activeProviderId: provider.id })}
+                  >
+                    <strong>{provider.name}</strong>
+                    <span className="provider-meta">
+                      {provider.kind === "official" ? t("official") : t("custom")} / {providerLabel(provider)}
+                    </span>
+                    <span className="provider-meta">{provider.defaultModelId || t("noDefaultModel")}</span>
+                  </button>
+                ))}
+              </div>
+            </>
+          ) : (
+            <div className="grid gap-2">
+              {filteredAccounts.map((account) => (
+                <button
+                  type="button"
+                  key={account.id}
+                  className={`provider-item ${account.id === selectedAccount?.id ? "active" : ""}`}
+                  onClick={() => setSelectedAccountId(account.id)}
+                >
+                  <strong>{account.label}</strong>
+                  <span className="provider-meta">{OFFICIAL_PROVIDER_LABELS[account.providerId]} / {account.kind === "oauth" ? "OAuth" : "API Key"}</span>
+                  <span className="provider-meta">{account.activeInPi ? t("activeInPi") : t("saved")}</span>
+                </button>
+              ))}
+            </div>
+          )}
         </aside>
 
         <section className="min-w-0 overflow-auto p-5">
-          {!activeProvider ? (
+          {activeTab === "accounts" ? (
+            <AccountsPanel
+              accounts={accounts}
+              filteredAccounts={filteredAccounts}
+              selectedAccount={selectedAccount}
+              providerFilter={accountProviderFilter}
+              providerId={newAccountProviderId}
+              label={newAccountLabel}
+              apiKey={newAccountApiKey}
+              showApiKey={showAccountKey}
+              busy={accountBusy}
+              oauthState={oauthState}
+              onProviderFilter={setAccountProviderFilter}
+              onProviderId={setNewAccountProviderId}
+              onLabel={setNewAccountLabel}
+              onApiKey={setNewAccountApiKey}
+              onShowApiKey={setShowAccountKey}
+              onAddOAuth={addOAuthAccount}
+              onAddApiKey={addApiKeyAccount}
+              onImport={importCurrentPiAuth}
+              onApply={applySelectedAccount}
+              onRename={renameSelectedAccount}
+              onDuplicate={duplicateSelectedAccount}
+              onDelete={deleteSelectedAccount}
+              onSelect={setSelectedAccountId}
+              t={t}
+            />
+          ) : !activeProvider ? (
             <div className="grid min-h-[420px] place-items-center muted">{t("noProvider")}</div>
           ) : (
             <div className="grid max-w-[1040px] gap-4">
@@ -407,7 +718,21 @@ function App() {
               </div>
 
               {activeProvider.kind === "official" ? (
-                <OfficialProviderForm provider={activeProvider} onChange={updateActiveProvider} errors={errors} showKey={showKey} setShowKey={setShowKey} onOpenAdvanced={() => providerAdvancedDialogRef.current?.showModal()} t={t} />
+                <OfficialProviderForm
+                  provider={activeProvider}
+                  onChange={updateActiveProvider}
+                  errors={errors}
+                  showKey={showKey}
+                  setShowKey={setShowKey}
+                  onOpenAdvanced={() => providerAdvancedDialogRef.current?.showModal()}
+                  onLoginOAuth={loginOAuthProvider}
+                  onSaveApiKeyAsAccount={saveProviderApiKeyAsAccount}
+                  onManageAccounts={manageAccountsForProvider}
+                  oauthState={oauthState}
+                  accounts={accounts}
+                  busy={accountBusy}
+                  t={t}
+                />
               ) : (
                 <CustomProviderForm provider={activeProvider} onChange={updateActiveProvider} errors={errors} showKey={showKey} setShowKey={setShowKey} onOpenAdvanced={() => providerAdvancedDialogRef.current?.showModal()} t={t} />
               )}
@@ -646,6 +971,166 @@ function AdvancedButton({ label, help, onClick }: { label: string; help: string;
   );
 }
 
+function AccountsPanel({
+  accounts,
+  filteredAccounts,
+  selectedAccount,
+  providerFilter,
+  providerId,
+  label,
+  apiKey,
+  showApiKey,
+  busy,
+  oauthState,
+  onProviderFilter,
+  onProviderId,
+  onLabel,
+  onApiKey,
+  onShowApiKey,
+  onAddOAuth,
+  onAddApiKey,
+  onImport,
+  onApply,
+  onRename,
+  onDuplicate,
+  onDelete,
+  onSelect,
+  t,
+}: {
+  accounts: AuthAccount[];
+  filteredAccounts: AuthAccount[];
+  selectedAccount?: AuthAccount;
+  providerFilter: AccountProviderFilter;
+  providerId: OfficialProviderId;
+  label: string;
+  apiKey: string;
+  showApiKey: boolean;
+  busy: boolean;
+  oauthState: OAuthState;
+  onProviderId: (value: OfficialProviderId) => void;
+  onLabel: (value: string) => void;
+  onApiKey: (value: string) => void;
+  onShowApiKey: (value: boolean) => void;
+  onAddOAuth: () => void;
+  onAddApiKey: () => void;
+  onImport: () => void;
+  onApply: (account: AuthAccount) => void;
+  onRename: (account: AuthAccount) => void;
+  onDuplicate: (account: AuthAccount) => void;
+  onDelete: (account: AuthAccount) => void;
+  onSelect: (accountId: string) => void;
+  onProviderFilter: (value: AccountProviderFilter) => void;
+  t: ReturnType<typeof createTranslator>;
+}) {
+  const oauthSupported = supportsOAuthLogin(providerId);
+  return (
+    <div className="grid max-w-[1040px] gap-4">
+      <div className="flex items-center justify-between gap-3">
+        <h2 className="m-0 text-lg font-semibold">{t("accounts")}</h2>
+        <span className="rounded-full border px-3 py-1 text-xs" style={{ borderColor: "var(--border)", color: "var(--muted)" }}>
+          {filteredAccounts.length}/{accounts.length}
+        </span>
+      </div>
+
+      <section className="grid gap-4 rounded-md border p-4" style={{ borderColor: "var(--border)", background: "var(--surface)" }}>
+        <SectionTitle>{t("addAccount")}</SectionTitle>
+        <div className="editor-grid grid grid-cols-3 gap-4">
+          <Field label={t("provider")}>
+            <select value={providerId} onChange={(event) => onProviderId(event.target.value as OfficialProviderId)}>
+              {OFFICIAL_PROVIDER_IDS.map((id) => (
+                <option key={id} value={id}>
+                  {OFFICIAL_PROVIDER_LABELS[id]}
+                </option>
+              ))}
+            </select>
+          </Field>
+          <Field label={t("accountName")}>
+            <input value={label} onChange={(event) => onLabel(event.target.value)} placeholder={OFFICIAL_PROVIDER_LABELS[providerId]} />
+          </Field>
+          <SecretField value={apiKey} onChange={onApiKey} showKey={showApiKey} setShowKey={onShowApiKey} t={t} />
+        </div>
+        <div className="flex flex-wrap gap-2">
+          <button type="button" className="flex items-center gap-2" onClick={onAddOAuth} disabled={busy || oauthState.running || !oauthSupported}>
+            <Plus size={15} /> {oauthState.running && oauthState.providerId === providerId ? t("running") : t("addOAuthAccount")}
+          </button>
+          <button type="button" className="flex items-center gap-2" onClick={onAddApiKey} disabled={busy}>
+            <Plus size={15} /> {t("addApiKeyAccount")}
+          </button>
+          <button type="button" className="flex items-center gap-2" onClick={onImport} disabled={busy}>
+            <Download size={15} /> {t("importPiAuth")}
+          </button>
+        </div>
+        {oauthState.providerId === providerId && oauthState.events.length > 0 ? <OAuthEventList events={oauthState.events} t={t} /> : null}
+      </section>
+
+      <section className="grid gap-3">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <SectionTitle>{t("savedAccounts")}</SectionTitle>
+          <label className="filter-control">
+            <span>{t("accountFilter")}</span>
+            <select value={providerFilter} onChange={(event) => onProviderFilter(event.target.value as AccountProviderFilter)}>
+              <option value="all">{t("allAccounts")}</option>
+              {OFFICIAL_PROVIDER_IDS.map((id) => (
+                <option key={id} value={id}>
+                  {OFFICIAL_PROVIDER_LABELS[id]}
+                </option>
+              ))}
+            </select>
+          </label>
+        </div>
+        {filteredAccounts.length === 0 ? <div className="empty-state">{t("noAccounts")}</div> : null}
+        <div className="model-list">
+          {filteredAccounts.map((account) => (
+            <div
+              key={account.id}
+              className={`account-row ${account.id === selectedAccount?.id ? "active" : ""}`}
+              role="button"
+              tabIndex={0}
+              onClick={() => onSelect(account.id)}
+              onKeyDown={(event) => {
+                if (event.key === "Enter" || event.key === " ") {
+                  event.preventDefault();
+                  onSelect(account.id);
+                }
+              }}
+            >
+              <strong>{account.label}</strong>
+              <span className="model-id">{account.providerId}</span>
+              <span className="model-meta">{account.kind === "oauth" ? "OAuth" : "API Key"}</span>
+              <span className="model-meta">{account.activeInPi ? t("activeInPi") : t("saved")}</span>
+              <button
+                type="button"
+                onClick={(event) => {
+                  event.stopPropagation();
+                  onApply(account);
+                }}
+                disabled={busy}
+              >
+                {t("applyAccount")}
+              </button>
+            </div>
+          ))}
+        </div>
+      </section>
+
+      {selectedAccount ? (
+        <section className="grid gap-3 rounded-md border p-4" style={{ borderColor: "var(--border)", background: "var(--surface)" }}>
+          <div>
+            <h3 className="m-0 text-base font-semibold">{selectedAccount.label}</h3>
+            <div className="muted">{OFFICIAL_PROVIDER_LABELS[selectedAccount.providerId]} / {selectedAccount.kind === "oauth" ? "OAuth" : "API Key"} / {selectedAccount.id}</div>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            <button type="button" onClick={() => onApply(selectedAccount)} disabled={busy}>{t("applyAccount")}</button>
+            <button type="button" onClick={() => onRename(selectedAccount)} disabled={busy}>{t("renameAccount")}</button>
+            <button type="button" onClick={() => onDuplicate(selectedAccount)} disabled={busy}>{t("duplicate")}</button>
+            <button type="button" className="danger" onClick={() => onDelete(selectedAccount)} disabled={busy}>{t("delete")}</button>
+          </div>
+        </section>
+      ) : null}
+    </div>
+  );
+}
+
 function OfficialProviderForm({
   provider,
   onChange,
@@ -653,6 +1138,12 @@ function OfficialProviderForm({
   showKey,
   setShowKey,
   onOpenAdvanced,
+  onLoginOAuth,
+  onSaveApiKeyAsAccount,
+  onManageAccounts,
+  oauthState,
+  accounts,
+  busy,
   t,
 }: {
   provider: Extract<Provider, { kind: "official" }>;
@@ -661,8 +1152,18 @@ function OfficialProviderForm({
   showKey: boolean;
   setShowKey: (show: boolean) => void;
   onOpenAdvanced: () => void;
+  onLoginOAuth: (provider: Extract<Provider, { kind: "official" }>) => void;
+  onSaveApiKeyAsAccount: (provider: Extract<Provider, { kind: "official" }>) => void;
+  onManageAccounts: (providerId: OfficialProviderId) => void;
+  oauthState: OAuthState;
+  accounts: AuthAccount[];
+  busy: boolean;
   t: ReturnType<typeof createTranslator>;
 }) {
+  const oauthSupported = supportsOAuthLogin(provider.providerId);
+  const oauthRunning = oauthState.running && oauthState.providerId === provider.providerId;
+  const oauthDisabled = oauthState.running || busy;
+  const providerAccounts = accounts.filter((account) => account.providerId === provider.providerId);
   return (
     <div className="grid gap-4">
       <div className="editor-grid grid grid-cols-2 gap-4">
@@ -675,6 +1176,7 @@ function OfficialProviderForm({
                 ...provider,
                 providerId,
                 name: OFFICIAL_PROVIDER_LABELS[providerId],
+                authAccountId: undefined,
                 models: [],
                 defaultModelId: "",
               });
@@ -690,16 +1192,79 @@ function OfficialProviderForm({
         <Field label={t("authMode")}>
           <select value={provider.authMode} onChange={(event) => onChange({ ...provider, authMode: event.target.value as AuthMode })}>
             <option value="existing">{t("authExisting")}</option>
+            <option value="account">{t("authAccount")}</option>
             <option value="apiKey">{t("authApiKey")}</option>
           </select>
         </Field>
       </div>
+      {provider.authMode === "account" ? (
+        <Field label={t("account")} error={fieldError(errors.authAccountId, t)} required>
+          <div className="editor-grid grid grid-cols-[minmax(0,1fr)_auto] gap-2">
+            <select value={provider.authAccountId ?? ""} onChange={(event) => onChange({ ...provider, authAccountId: event.target.value })}>
+              <option value="">{t("selectAccount")}</option>
+              {providerAccounts.map((account) => (
+                <option key={account.id} value={account.id}>
+                  {account.label} / {account.kind === "oauth" ? "OAuth" : "API Key"}
+                </option>
+              ))}
+            </select>
+            <button type="button" onClick={() => onManageAccounts(provider.providerId)}>
+              {t("manageAccounts")}
+            </button>
+          </div>
+        </Field>
+      ) : null}
       {provider.authMode === "apiKey" ? (
-        <SecretField value={provider.apiKey} onChange={(apiKey) => onChange({ ...provider, apiKey })} showKey={showKey} setShowKey={setShowKey} error={fieldError(errors.apiKey, t)} required t={t} />
+        <div className="grid gap-2">
+          <SecretField value={provider.apiKey} onChange={(apiKey) => onChange({ ...provider, apiKey })} showKey={showKey} setShowKey={setShowKey} error={fieldError(errors.apiKey, t)} required t={t} />
+          <div className="flex flex-wrap items-center gap-2">
+            <button type="button" onClick={() => onSaveApiKeyAsAccount(provider)} disabled={busy || !provider.apiKey.trim()}>
+              {t("saveApiKeyAsAccount")}
+            </button>
+            <span className="muted">{t("saveApiKeyAsAccountHelp")}</span>
+          </div>
+        </div>
+      ) : null}
+      {oauthSupported ? (
+        <section className="grid gap-2 rounded-md border p-3" style={{ borderColor: "var(--border)", background: "var(--surface)" }}>
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div>
+              <strong className="text-sm">{t("oauthLogin")}</strong>
+              <div className="muted">{t("oauthLoginHelp")}</div>
+            </div>
+            <button type="button" onClick={() => onLoginOAuth(provider)} disabled={oauthDisabled}>
+              {oauthRunning ? t("running") : t("oauthLogin")}
+            </button>
+          </div>
+          {oauthState.providerId === provider.providerId && oauthState.events.length > 0 ? <OAuthEventList events={oauthState.events} t={t} /> : null}
+        </section>
       ) : null}
       <AdvancedButton onClick={onOpenAdvanced} label={t("providerAdvanced")} help={t("providerAdvancedHelp")} />
     </div>
   );
+}
+
+function OAuthEventList({ events, t }: { events: OAuthLoginEvent[]; t: ReturnType<typeof createTranslator> }) {
+  return (
+    <div className="grid gap-1">
+      {events.map((event, index) => (
+        <div key={`${event.type}-${index}`} className="oauth-event muted">
+          {formatOAuthEvent(event, t)}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function formatOAuthEvent(event: OAuthLoginEvent, t: ReturnType<typeof createTranslator>) {
+  if (event.type === "auth") return `${t("oauthOpenUrl")}: ${event.url}`;
+  if (event.type === "deviceCode") return `${t("oauthDeviceCode")}: ${event.userCode} / ${event.verificationUri}`;
+  if (event.type === "manualCode") return `${t("oauthManualCode")}: ${event.message ?? t("oauthManualCodePrompt")}`;
+  if (event.type === "prompt") return `${t("oauthPrompt")}: ${event.message}`;
+  if (event.type === "progress") return event.message;
+  if (event.type === "success") return event.message ?? t("oauthLoginSuccess");
+  if (event.type === "select") return `${event.message}: ${event.selected ?? ""}`;
+  return event.message ?? event.type;
 }
 
 function CustomProviderForm({

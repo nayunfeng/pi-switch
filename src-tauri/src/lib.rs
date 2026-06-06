@@ -5,15 +5,23 @@ use std::{
     fs,
     io::Write,
     path::{Path, PathBuf},
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Mutex,
+    },
+    time::{SystemTime, UNIX_EPOCH},
 };
-use tauri::Manager;
+use tauri::{Emitter, Manager};
 use tokio::{
-    io::AsyncReadExt,
+    io::{AsyncBufReadExt, AsyncReadExt},
     process::Command,
     time::{timeout, Duration},
 };
 
-const SCHEMA_VERSION: u32 = 2;
+const SCHEMA_VERSION: u32 = 3;
+const ACCOUNTS_VERSION: u32 = 1;
+static ACCOUNT_ID_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+static OAUTH_LOGIN_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 const OFFICIAL_PROVIDER_IDS: &[&str] = &[
     "amazon-bedrock",
     "ant-ling",
@@ -91,7 +99,11 @@ pub struct OfficialProvider {
     pub id: String,
     pub name: String,
     pub provider_id: String,
+    #[serde(default = "default_auth_mode")]
     pub auth_mode: AuthMode,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auth_account_id: Option<String>,
+    #[serde(default)]
     pub api_key: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub advanced: Option<ProviderAdvancedConfig>,
@@ -122,6 +134,74 @@ pub struct CustomProvider {
 pub enum AuthMode {
     Existing,
     ApiKey,
+    Account,
+}
+
+fn default_auth_mode() -> AuthMode {
+    AuthMode::Existing
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AccountsStore {
+    #[serde(default = "default_accounts_version")]
+    pub version: u32,
+    #[serde(default)]
+    pub accounts: Vec<AuthAccount>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AccountsView {
+    pub version: u32,
+    pub accounts: Vec<AuthAccountView>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AuthAccount {
+    pub id: String,
+    pub provider_id: String,
+    pub label: String,
+    pub kind: AuthAccountKind,
+    pub credential: Value,
+    pub created_at: String,
+    pub updated_at: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_applied_at: Option<String>,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub active_in_pi: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AuthAccountView {
+    pub id: String,
+    pub provider_id: String,
+    pub label: String,
+    pub kind: AuthAccountKind,
+    pub created_at: String,
+    pub updated_at: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_applied_at: Option<String>,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub active_in_pi: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub enum AuthAccountKind {
+    #[serde(rename = "oauth", alias = "oAuth")]
+    OAuth,
+    #[serde(rename = "apiKey")]
+    ApiKey,
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
+}
+
+fn default_accounts_version() -> u32 {
+    ACCOUNTS_VERSION
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -327,6 +407,95 @@ pub struct ListPiModelsInput {
     pub api_key: Option<String>,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LoginOfficialProviderOAuthInput {
+    pub provider_id: String,
+    pub label: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LoginOfficialProviderOAuthResult {
+    pub account: AuthAccountView,
+    pub provider_name: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SubmitOAuthManualCodeInput {
+    pub login_id: String,
+    pub code: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CreateApiKeyAccountInput {
+    pub provider_id: String,
+    pub label: String,
+    pub api_key: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RenameAuthAccountInput {
+    pub account_id: String,
+    pub label: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeleteAuthAccountInput {
+    pub account_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DuplicateAuthAccountInput {
+    pub account_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ApplyAuthAccountInput {
+    pub account_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ImportPiAuthAccountInput {
+    pub provider_id: String,
+    pub label: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OAuthEvent {
+    #[serde(rename = "type")]
+    pub event_type: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub login_id: Option<String>,
+    pub provider_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub provider_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub instructions: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub verification_uri: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub user_code: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub interval_seconds: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub expires_in_seconds: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub selected: Option<String>,
+}
+
 #[derive(Debug, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct PiModelInfo {
@@ -401,6 +570,7 @@ impl AppError {
 struct Paths {
     app_config_dir: PathBuf,
     app_config_file: PathBuf,
+    accounts_file: PathBuf,
     pi_agent_dir: PathBuf,
     pi_models_file: PathBuf,
     pi_auth_file: PathBuf,
@@ -423,10 +593,12 @@ fn resolve_paths() -> AppResult<Paths> {
         .ok_or_else(|| AppError::new("PATH_RESOLVE_FAILED", "无法解析当前用户 home 目录"))?;
     let app_config_dir = home.join("PiSwitch");
     let app_config_file = app_config_dir.join("config.json");
+    let accounts_file = app_config_dir.join("accounts.json");
     let pi_agent_dir = home.join(".pi").join("agent");
     Ok(Paths {
         app_config_dir,
         app_config_file,
+        accounts_file,
         pi_models_file: pi_agent_dir.join("models.json"),
         pi_auth_file: pi_agent_dir.join("auth.json"),
         pi_settings_file: pi_agent_dir.join("settings.json"),
@@ -442,6 +614,506 @@ fn paths_for_frontend(paths: &Paths) -> ResolvedPaths {
         pi_auth_file: paths.pi_auth_file.display().to_string(),
         pi_settings_file: paths.pi_settings_file.display().to_string(),
     }
+}
+
+fn default_accounts_store() -> AccountsStore {
+    AccountsStore {
+        version: ACCOUNTS_VERSION,
+        accounts: Vec::new(),
+    }
+}
+
+#[derive(Default)]
+struct OAuthLoginSessions {
+    manual_code_files: Mutex<HashMap<String, PathBuf>>,
+}
+
+fn create_oauth_login_id() -> String {
+    let sequence = OAUTH_LOGIN_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+    format!("oauth_{}_{}_{}", std::process::id(), now_nanos(), sequence)
+}
+
+fn register_oauth_login_session(
+    sessions: &OAuthLoginSessions,
+    login_id: &str,
+    manual_code_file: &Path,
+) -> AppResult<()> {
+    let mut files = sessions
+        .manual_code_files
+        .lock()
+        .map_err(|_| AppError::new("OAUTH_LOGIN_FAILED", "OAuth 登录会话状态不可用"))?;
+    files.insert(login_id.to_string(), manual_code_file.to_path_buf());
+    Ok(())
+}
+
+fn unregister_oauth_login_session(sessions: &OAuthLoginSessions, login_id: &str) {
+    if let Ok(mut files) = sessions.manual_code_files.lock() {
+        files.remove(login_id);
+    }
+}
+
+struct OAuthLoginSessionGuard<'a> {
+    sessions: &'a OAuthLoginSessions,
+    login_id: String,
+    manual_code_file: PathBuf,
+}
+
+impl<'a> OAuthLoginSessionGuard<'a> {
+    fn register(
+        sessions: &'a OAuthLoginSessions,
+        login_id: String,
+        manual_code_file: PathBuf,
+    ) -> AppResult<Self> {
+        register_oauth_login_session(sessions, &login_id, &manual_code_file)?;
+        Ok(Self {
+            sessions,
+            login_id,
+            manual_code_file,
+        })
+    }
+
+    fn cleanup(&self) {
+        unregister_oauth_login_session(self.sessions, &self.login_id);
+        let _ = fs::remove_file(&self.manual_code_file);
+    }
+}
+
+impl Drop for OAuthLoginSessionGuard<'_> {
+    fn drop(&mut self) {
+        self.cleanup();
+    }
+}
+
+fn submit_oauth_manual_code_to_session(
+    sessions: &OAuthLoginSessions,
+    input: SubmitOAuthManualCodeInput,
+) -> AppResult<()> {
+    let code = input.code.trim();
+    if code.is_empty() {
+        return Err(validation_error("OAuth 登录码不能为空"));
+    }
+    let path = {
+        let files = sessions
+            .manual_code_files
+            .lock()
+            .map_err(|_| AppError::new("OAUTH_LOGIN_FAILED", "OAuth 登录会话状态不可用"))?;
+        files
+            .get(&input.login_id)
+            .cloned()
+            .ok_or_else(|| validation_error("OAuth 登录会话不存在或已结束"))?
+    };
+    fs::write(&path, code).map_err(|err| {
+        AppError::new("OAUTH_LOGIN_FAILED", "写入 OAuth 登录码失败").with_details(err.to_string())
+    })
+}
+
+fn account_to_view(account: &AuthAccount) -> AuthAccountView {
+    AuthAccountView {
+        id: account.id.clone(),
+        provider_id: account.provider_id.clone(),
+        label: account.label.clone(),
+        kind: account.kind.clone(),
+        created_at: account.created_at.clone(),
+        updated_at: account.updated_at.clone(),
+        last_applied_at: account.last_applied_at.clone(),
+        active_in_pi: account.active_in_pi,
+    }
+}
+
+fn accounts_to_view(store: &AccountsStore) -> AccountsView {
+    AccountsView {
+        version: store.version,
+        accounts: store.accounts.iter().map(account_to_view).collect(),
+    }
+}
+
+fn now_millis() -> u128 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis()
+}
+
+fn now_nanos() -> u128 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos()
+}
+
+fn now_timestamp_string() -> String {
+    now_millis().to_string()
+}
+
+fn create_account_id() -> String {
+    let sequence = ACCOUNT_ID_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+    format!(
+        "account_{}_{}_{}",
+        std::process::id(),
+        now_nanos(),
+        sequence
+    )
+}
+
+fn normalize_account_label(
+    label: Option<&str>,
+    provider_id: &str,
+    kind: AuthAccountKind,
+) -> String {
+    let trimmed = label.unwrap_or_default().trim();
+    if !trimmed.is_empty() {
+        return trimmed.to_string();
+    }
+    let suffix = match kind {
+        AuthAccountKind::OAuth => "OAuth",
+        AuthAccountKind::ApiKey => "API Key",
+    };
+    format!("{provider_id} {suffix}")
+}
+
+fn load_accounts_store_from_path(path: &Path) -> AppResult<AccountsStore> {
+    if !path.exists() {
+        return Ok(default_accounts_store());
+    }
+    let text = fs::read_to_string(path).map_err(|err| {
+        AppError::new("ACCOUNTS_READ_FAILED", "读取账号库失败").with_details(err.to_string())
+    })?;
+    let mut store: AccountsStore = serde_json::from_str(&text).map_err(|err| {
+        AppError::new("ACCOUNTS_PARSE_FAILED", "账号库 JSON 无法解析").with_details(err.to_string())
+    })?;
+    if store.version != ACCOUNTS_VERSION {
+        return Err(AppError::new(
+            "UNSUPPORTED_ACCOUNTS_VERSION",
+            format!("不支持的 accounts.json version: {}", store.version),
+        ));
+    }
+    store.accounts = normalize_accounts(store.accounts)?;
+    Ok(store)
+}
+
+fn normalize_accounts(accounts: Vec<AuthAccount>) -> AppResult<Vec<AuthAccount>> {
+    let mut ids = HashSet::new();
+    let mut normalized = Vec::new();
+    for mut account in accounts {
+        account.id = account.id.trim().to_string();
+        account.provider_id = account.provider_id.trim().to_string();
+        account.label = account.label.trim().to_string();
+        if account.id.is_empty() {
+            return Err(validation_error("账号 ID 不能为空"));
+        }
+        if !ids.insert(account.id.clone()) {
+            return Err(validation_error(format!("账号 ID 重复: {}", account.id)));
+        }
+        validate_official_provider_id(&account.provider_id)?;
+        if account.label.is_empty() {
+            account.label =
+                normalize_account_label(None, &account.provider_id, account.kind.clone());
+        }
+        account.active_in_pi = false;
+        validate_account_credential(&account)?;
+        normalized.push(account);
+    }
+    Ok(normalized)
+}
+
+fn save_accounts_store_to_path(path: &Path, store: &AccountsStore) -> AppResult<()> {
+    let mut normalized = store.clone();
+    normalized.accounts = normalize_accounts(normalized.accounts)?;
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|err| {
+            AppError::new("ACCOUNTS_WRITE_FAILED", "创建账号库目录失败")
+                .with_details(err.to_string())
+        })?;
+    }
+    atomic_write_json(path, &normalized).map_err(|err| {
+        AppError::new("ACCOUNTS_WRITE_FAILED", "写入账号库失败")
+            .with_details(err.message_with_details())
+    })?;
+    restrict_file_permissions(path)?;
+    Ok(())
+}
+
+fn restrict_file_permissions(path: &Path) -> AppResult<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(path, fs::Permissions::from_mode(0o600)).map_err(|err| {
+            AppError::new("ACCOUNTS_WRITE_FAILED", "设置账号库文件权限失败")
+                .with_details(err.to_string())
+        })?;
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = path;
+    }
+    Ok(())
+}
+
+fn load_accounts_store() -> AppResult<AccountsStore> {
+    let paths = resolve_paths()?;
+    let mut store = load_accounts_store_from_path(&paths.accounts_file)?;
+    if annotate_active_accounts(&mut store, &paths.pi_auth_file) {
+        save_accounts_store_to_path(&paths.accounts_file, &store)?;
+    }
+    Ok(store)
+}
+
+fn save_accounts_store(store: &AccountsStore) -> AppResult<()> {
+    let paths = resolve_paths()?;
+    save_accounts_store_to_path(&paths.accounts_file, store)
+}
+
+fn annotate_active_accounts(store: &mut AccountsStore, pi_auth_file: &Path) -> bool {
+    let auth = read_json_object(pi_auth_file, "PI_AUTH_READ_FAILED", "auth.json").ok();
+    for account in &mut store.accounts {
+        account.active_in_pi = false;
+    }
+    let Some(auth) = auth else {
+        return false;
+    };
+
+    let mut changed = false;
+    let provider_ids = store
+        .accounts
+        .iter()
+        .map(|account| account.provider_id.clone())
+        .collect::<HashSet<_>>();
+    for provider_id in provider_ids {
+        let Some(current_credential) = auth.get(&provider_id) else {
+            continue;
+        };
+        let Some(index) =
+            matching_current_pi_auth_account_index(store, current_credential, &provider_id, None)
+        else {
+            continue;
+        };
+        let account = &mut store.accounts[index];
+        account.active_in_pi = true;
+        if account.credential != *current_credential {
+            account.credential = current_credential.clone();
+            account.updated_at = now_timestamp_string();
+            changed = true;
+        }
+    }
+    changed
+}
+
+fn credential_same_auth_kind(left: &Value, right: &Value) -> bool {
+    left.get("type").and_then(Value::as_str) == right.get("type").and_then(Value::as_str)
+}
+
+fn credential_is_oauth(value: &Value) -> bool {
+    value.get("type").and_then(Value::as_str) == Some("oauth")
+}
+
+fn matching_current_pi_auth_account_index(
+    store: &AccountsStore,
+    current_credential: &Value,
+    replacing_provider_id: &str,
+    exclude_account_id: Option<&str>,
+) -> Option<usize> {
+    let exact_index = store.accounts.iter().position(|account| {
+        account.provider_id == replacing_provider_id
+            && Some(account.id.as_str()) != exclude_account_id
+            && account.credential == *current_credential
+    });
+    let latest_applied_index = store
+        .accounts
+        .iter()
+        .enumerate()
+        .filter(|(_, account)| {
+            account.provider_id == replacing_provider_id
+                && Some(account.id.as_str()) != exclude_account_id
+                && credential_is_oauth(current_credential)
+                && credential_same_auth_kind(&account.credential, current_credential)
+                && account.last_applied_at.is_some()
+        })
+        .max_by(|(_, left), (_, right)| left.last_applied_at.cmp(&right.last_applied_at))
+        .map(|(index, _)| index);
+
+    exact_index.or(latest_applied_index)
+}
+
+fn account_matches_current_pi_auth(
+    store: &AccountsStore,
+    account_id: &str,
+    pi_auth_file: &Path,
+) -> AppResult<bool> {
+    let Some(account) = store
+        .accounts
+        .iter()
+        .find(|account| account.id == account_id)
+    else {
+        return Ok(false);
+    };
+    let auth = read_json_object(pi_auth_file, "PI_AUTH_READ_FAILED", "auth.json")?;
+    let Some(current_credential) = auth.get(&account.provider_id) else {
+        return Ok(false);
+    };
+    Ok(matching_current_pi_auth_account_index(
+        store,
+        current_credential,
+        &account.provider_id,
+        None,
+    )
+    .is_some_and(|index| store.accounts[index].id == account_id))
+}
+
+fn sync_current_pi_auth_to_matching_account(
+    store: &mut AccountsStore,
+    pi_auth_file: &Path,
+    replacing_provider_id: &str,
+    exclude_account_id: Option<&str>,
+) -> AppResult<bool> {
+    let auth = read_json_object(pi_auth_file, "PI_AUTH_READ_FAILED", "auth.json")?;
+    let Some(current_credential) = auth.get(replacing_provider_id) else {
+        return Ok(false);
+    };
+
+    let Some(index) = matching_current_pi_auth_account_index(
+        store,
+        current_credential,
+        replacing_provider_id,
+        exclude_account_id,
+    ) else {
+        return Ok(false);
+    };
+    let account = &mut store.accounts[index];
+    if account.credential != *current_credential {
+        account.credential = current_credential.clone();
+        account.updated_at = now_timestamp_string();
+        return Ok(true);
+    }
+    Ok(false)
+}
+
+fn validate_official_provider_id(provider_id: &str) -> AppResult<()> {
+    if provider_id.trim().is_empty() || !OFFICIAL_PROVIDER_IDS.contains(&provider_id) {
+        return Err(validation_error("未知官方供应商"));
+    }
+    Ok(())
+}
+
+fn validate_account_credential(account: &AuthAccount) -> AppResult<()> {
+    match account.kind {
+        AuthAccountKind::OAuth => {
+            let object = account
+                .credential
+                .as_object()
+                .ok_or_else(|| validation_error("OAuth 凭证必须是 object"))?;
+            if object.get("type").and_then(Value::as_str) != Some("oauth") {
+                return Err(validation_error("OAuth 凭证 type 必须是 oauth"));
+            }
+        }
+        AuthAccountKind::ApiKey => {
+            if account_credential_api_key(&account.credential).is_none() {
+                return Err(validation_error("API Key 凭证不能为空"));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn account_credential_api_key(credential: &Value) -> Option<String> {
+    credential
+        .get("key")
+        .and_then(Value::as_str)
+        .or_else(|| credential.get("apiKey").and_then(Value::as_str))
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToString::to_string)
+}
+
+fn create_api_key_credential(api_key: &str) -> Value {
+    json!({
+        "type": "api_key",
+        "key": api_key.trim()
+    })
+}
+
+fn upsert_auth_account(
+    store: &mut AccountsStore,
+    provider_id: String,
+    label: String,
+    kind: AuthAccountKind,
+    credential: Value,
+) -> AppResult<AuthAccount> {
+    validate_official_provider_id(&provider_id)?;
+    let now = now_timestamp_string();
+    let account = AuthAccount {
+        id: create_account_id(),
+        provider_id,
+        label,
+        kind,
+        credential,
+        created_at: now.clone(),
+        updated_at: now,
+        last_applied_at: None,
+        active_in_pi: false,
+    };
+    validate_account_credential(&account)?;
+    store.accounts.push(account.clone());
+    Ok(account)
+}
+
+fn duplicate_auth_account_in_store(
+    store: &mut AccountsStore,
+    account_id: &str,
+) -> AppResult<AuthAccount> {
+    let source = store
+        .accounts
+        .iter()
+        .find(|account| account.id == account_id)
+        .cloned()
+        .ok_or_else(|| validation_error("账号不存在"))?;
+    let now = now_timestamp_string();
+    let account = AuthAccount {
+        id: create_account_id(),
+        provider_id: source.provider_id,
+        label: format!("{} Copy", source.label),
+        kind: source.kind,
+        credential: source.credential,
+        created_at: now.clone(),
+        updated_at: now,
+        last_applied_at: None,
+        active_in_pi: false,
+    };
+    validate_account_credential(&account)?;
+    store.accounts.push(account.clone());
+    Ok(account)
+}
+
+fn clear_deleted_account_bindings(config: &mut AppConfig, account_id: &str) -> bool {
+    let mut changed = false;
+    for provider in &mut config.providers {
+        let Provider::Official(provider) = provider else {
+            continue;
+        };
+        if provider.auth_account_id.as_deref() == Some(account_id) {
+            provider.auth_account_id = None;
+            provider.auth_mode = AuthMode::Existing;
+            changed = true;
+        }
+    }
+    changed
+}
+
+fn clear_deleted_account_bindings_in_config_file(path: &Path, account_id: &str) -> AppResult<()> {
+    if !path.exists() {
+        return Ok(());
+    }
+    let text = fs::read_to_string(path).map_err(|err| {
+        AppError::new("CONFIG_PARSE_FAILED", "读取 GUI 配置失败").with_details(err.to_string())
+    })?;
+    let mut config: AppConfig = serde_json::from_str(&text).map_err(|err| {
+        AppError::new("CONFIG_PARSE_FAILED", "GUI 配置 JSON 无法解析").with_details(err.to_string())
+    })?;
+    config = normalize_app_config(config);
+    if clear_deleted_account_bindings(&mut config, account_id) {
+        validate_app_config(&config)?;
+        atomic_write_json(path, &config).map_err(|err| err.with_file("config.json", &[]))?;
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -460,6 +1132,7 @@ fn load_app_config() -> AppResult<LoadAppConfigResult> {
     let config: AppConfig = serde_json::from_str(&text).map_err(|err| {
         AppError::new("CONFIG_PARSE_FAILED", "GUI 配置 JSON 无法解析").with_details(err.to_string())
     })?;
+    let config = normalize_app_config(config);
     validate_app_config(&config)?;
     Ok(LoadAppConfigResult {
         config,
@@ -478,6 +1151,146 @@ fn save_app_config(input: SaveAppConfigInput) -> AppResult<()> {
     })?;
     atomic_write_json(&paths.app_config_file, &config)
         .map_err(|err| err.with_file("config.json", &[]))
+}
+
+#[tauri::command]
+fn load_auth_accounts() -> AppResult<AccountsView> {
+    load_accounts_store().map(|store| accounts_to_view(&store))
+}
+
+#[tauri::command]
+fn submit_oauth_manual_code(
+    sessions: tauri::State<OAuthLoginSessions>,
+    input: SubmitOAuthManualCodeInput,
+) -> AppResult<()> {
+    submit_oauth_manual_code_to_session(&sessions, input)
+}
+
+#[tauri::command]
+fn create_api_key_account(input: CreateApiKeyAccountInput) -> AppResult<AuthAccountView> {
+    validate_official_provider_id(input.provider_id.trim())?;
+    let api_key = input.api_key.trim();
+    if api_key.is_empty() {
+        return Err(validation_error("API Key 不能为空"));
+    }
+    let mut store = load_accounts_store()?;
+    let label = normalize_account_label(
+        Some(&input.label),
+        input.provider_id.trim(),
+        AuthAccountKind::ApiKey,
+    );
+    let mut account = upsert_auth_account(
+        &mut store,
+        input.provider_id.trim().to_string(),
+        label,
+        AuthAccountKind::ApiKey,
+        create_api_key_credential(api_key),
+    )?;
+    save_accounts_store(&store)?;
+    account.active_in_pi = false;
+    Ok(account_to_view(&account))
+}
+
+#[tauri::command]
+fn rename_auth_account(input: RenameAuthAccountInput) -> AppResult<AuthAccountView> {
+    let label = input.label.trim();
+    if label.is_empty() {
+        return Err(validation_error("账号名称不能为空"));
+    }
+    let mut store = load_accounts_store()?;
+    let account = store
+        .accounts
+        .iter_mut()
+        .find(|account| account.id == input.account_id)
+        .ok_or_else(|| validation_error("账号不存在"))?;
+    account.label = label.to_string();
+    account.updated_at = now_timestamp_string();
+    save_accounts_store(&store)?;
+    let mut updated_store = load_accounts_store()?;
+    let updated = updated_store
+        .accounts
+        .drain(..)
+        .find(|account| account.id == input.account_id)
+        .ok_or_else(|| validation_error("账号不存在"))?;
+    Ok(account_to_view(&updated))
+}
+
+#[tauri::command]
+fn delete_auth_account(input: DeleteAuthAccountInput) -> AppResult<()> {
+    let paths = resolve_paths()?;
+    let mut store = load_accounts_store()?;
+    let before = store.accounts.len();
+    store
+        .accounts
+        .retain(|account| account.id != input.account_id);
+    if store.accounts.len() == before {
+        return Err(validation_error("账号不存在"));
+    }
+    clear_deleted_account_bindings_in_config_file(&paths.app_config_file, &input.account_id)?;
+    save_accounts_store(&store)?;
+    Ok(())
+}
+
+#[tauri::command]
+fn duplicate_auth_account(input: DuplicateAuthAccountInput) -> AppResult<AuthAccountView> {
+    let mut store = load_accounts_store()?;
+    let account = duplicate_auth_account_in_store(&mut store, &input.account_id)?;
+    save_accounts_store(&store)?;
+    Ok(account_to_view(&account))
+}
+
+#[tauri::command]
+fn apply_auth_account(input: ApplyAuthAccountInput) -> AppResult<AuthAccountView> {
+    let paths = resolve_paths()?;
+    fs::create_dir_all(&paths.pi_agent_dir).map_err(|err| {
+        AppError::new("PI_AUTH_WRITE_FAILED", "创建 Pi 配置目录失败").with_details(err.to_string())
+    })?;
+    let mut store = load_accounts_store_from_path(&paths.accounts_file)?;
+    let index = store
+        .accounts
+        .iter()
+        .position(|account| account.id == input.account_id)
+        .ok_or_else(|| validation_error("账号不存在"))?;
+    let provider_id = store.accounts[index].provider_id.clone();
+    let target_is_current =
+        account_matches_current_pi_auth(&store, &input.account_id, &paths.pi_auth_file)?;
+    let _ = sync_current_pi_auth_to_matching_account(
+        &mut store,
+        &paths.pi_auth_file,
+        &provider_id,
+        (!target_is_current).then_some(input.account_id.as_str()),
+    )?;
+    write_account_to_pi_auth(&store.accounts[index], &paths.pi_auth_file)?;
+    let now = now_timestamp_string();
+    store.accounts[index].last_applied_at = Some(now.clone());
+    store.accounts[index].updated_at = now;
+    let _ = annotate_active_accounts(&mut store, &paths.pi_auth_file);
+    let account = store.accounts[index].clone();
+    save_accounts_store_to_path(&paths.accounts_file, &store)?;
+    Ok(account_to_view(&account))
+}
+
+#[tauri::command]
+fn import_pi_auth_account(input: ImportPiAuthAccountInput) -> AppResult<AuthAccountView> {
+    let provider_id = input.provider_id.trim().to_string();
+    validate_official_provider_id(&provider_id)?;
+    let paths = resolve_paths()?;
+    let auth = read_json_object(&paths.pi_auth_file, "PI_AUTH_READ_FAILED", "auth.json")?;
+    let credential = auth
+        .get(&provider_id)
+        .cloned()
+        .ok_or_else(|| validation_error("Pi auth.json 中没有该供应商认证"))?;
+    let kind = match credential.get("type").and_then(Value::as_str) {
+        Some("oauth") => AuthAccountKind::OAuth,
+        Some("api_key") => AuthAccountKind::ApiKey,
+        _ => return Err(validation_error("无法识别该供应商认证类型")),
+    };
+    let mut store = load_accounts_store_from_path(&paths.accounts_file)?;
+    let label = normalize_account_label(input.label.as_deref(), &provider_id, kind.clone());
+    let mut account = upsert_auth_account(&mut store, provider_id, label, kind, credential)?;
+    save_accounts_store_to_path(&paths.accounts_file, &store)?;
+    account.active_in_pi = true;
+    Ok(account_to_view(&account))
 }
 
 #[tauri::command]
@@ -708,6 +1521,209 @@ console.log(JSON.stringify(models));
         .map(|models| ListPiModelsResult { models })
 }
 
+#[tauri::command]
+async fn login_official_provider_oauth(
+    window: tauri::Window,
+    sessions: tauri::State<'_, OAuthLoginSessions>,
+    input: LoginOfficialProviderOAuthInput,
+) -> AppResult<LoginOfficialProviderOAuthResult> {
+    if !matches!(
+        input.provider_id.as_str(),
+        "anthropic" | "github-copilot" | "openai-codex"
+    ) {
+        return Err(validation_error("当前官方供应商不支持 OAuth 登录"));
+    }
+
+    let pi_path = find_pi_command_path().await?;
+    let package_index = pi_path
+        .parent()
+        .and_then(Path::parent)
+        .map(|package_dir| package_dir.join("dist").join("index.js"))
+        .filter(|path| path.exists())
+        .ok_or_else(|| {
+            AppError::new("PI_PACKAGE_NOT_FOUND", "无法定位 Pi OAuth 模块")
+                .with_details(pi_path.display().to_string())
+        })?;
+
+    let temp_dir = tempfile::tempdir().map_err(|err| {
+        AppError::new("OAUTH_LOGIN_FAILED", "创建临时 OAuth 目录失败").with_details(err.to_string())
+    })?;
+    let temp_auth_file = temp_dir.path().join("auth.json");
+    let manual_code_file = temp_dir.path().join("manual-code.txt");
+    let login_id = create_oauth_login_id();
+    let session_guard =
+        OAuthLoginSessionGuard::register(&sessions, login_id.clone(), manual_code_file.clone())?;
+
+    let script = oauth_login_script(
+        &package_index,
+        &input.provider_id,
+        &temp_auth_file,
+        &login_id,
+        &manual_code_file,
+    );
+    let mut child = Command::new("node")
+        .arg("--input-type=module")
+        .arg("-e")
+        .arg(script)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .kill_on_drop(true)
+        .spawn()
+        .map_err(|err| {
+            AppError::new("NODE_COMMAND_NOT_FOUND", "无法启动 node 执行 OAuth 登录")
+                .with_details(err.to_string())
+        })?;
+
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| AppError::new("OAUTH_LOGIN_FAILED", "无法读取 OAuth 登录输出"))?;
+    let mut stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| AppError::new("OAUTH_LOGIN_FAILED", "无法读取 OAuth 登录错误输出"))?;
+    let mut stderr_task = tokio::spawn(async move {
+        let mut output = Vec::new();
+        let _ = stderr.read_to_end(&mut output).await;
+        String::from_utf8_lossy(&output).to_string()
+    });
+
+    let mut reader = tokio::io::BufReader::new(stdout);
+    let mut line = String::new();
+    let mut provider_name = input.provider_id.clone();
+    loop {
+        line.clear();
+        let read = reader.read_line(&mut line).await.map_err(|err| {
+            AppError::new("OAUTH_LOGIN_FAILED", "读取 OAuth 登录输出失败")
+                .with_details(err.to_string())
+        })?;
+        if read == 0 {
+            break;
+        }
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let event: OAuthEvent = serde_json::from_str(trimmed).map_err(|err| {
+            AppError::new("OAUTH_LOGIN_FAILED", "OAuth 登录输出无法解析")
+                .with_details(format!("{trimmed}: {err}"))
+        })?;
+        if let Some(name) = &event.provider_name {
+            provider_name = name.clone();
+        }
+        let _ = window.emit("oauth-login-event", event);
+    }
+
+    let status = child.wait().await.map_err(|err| {
+        AppError::new("OAUTH_LOGIN_FAILED", "等待 OAuth 登录进程失败").with_details(err.to_string())
+    })?;
+    session_guard.cleanup();
+    let stderr_text = match timeout(Duration::from_secs(2), &mut stderr_task).await {
+        Ok(Ok(text)) => text,
+        _ => String::new(),
+    };
+    if !status.success() {
+        return Err(AppError::new("OAUTH_LOGIN_FAILED", "OAuth 登录失败")
+            .with_details(stderr_text.trim().to_string()));
+    }
+
+    let auth = read_json_object(&temp_auth_file, "OAUTH_LOGIN_FAILED", "临时 auth.json")?;
+    let credential = auth
+        .get(&input.provider_id)
+        .cloned()
+        .ok_or_else(|| AppError::new("OAUTH_LOGIN_FAILED", "OAuth 登录未生成凭证"))?;
+    let mut store = load_accounts_store()?;
+    let label = normalize_account_label(
+        input.label.as_deref(),
+        &input.provider_id,
+        AuthAccountKind::OAuth,
+    );
+    let account = upsert_auth_account(
+        &mut store,
+        input.provider_id,
+        label,
+        AuthAccountKind::OAuth,
+        credential,
+    )?;
+    save_accounts_store(&store)?;
+
+    Ok(LoginOfficialProviderOAuthResult {
+        account: account_to_view(&account),
+        provider_name,
+    })
+}
+
+fn oauth_login_script(
+    package_index: &Path,
+    provider_id: &str,
+    auth_path: &Path,
+    login_id: &str,
+    manual_code_path: &Path,
+) -> String {
+    format!(
+        r#"
+import fs from "node:fs/promises";
+const mod = await import({package_index});
+const providerId = {provider_id};
+const loginId = {login_id};
+const manualCodePath = {manual_code_path};
+const auth = mod.AuthStorage.create({auth_path});
+const provider = auth.getOAuthProviders().find((item) => item.id === providerId);
+function emit(event) {{
+  process.stdout.write(JSON.stringify({{ loginId, providerId, providerName: provider?.name, ...event }}) + "\n");
+}}
+async function waitForManualCode() {{
+  emit({{ type: "manualCode", message: "Paste the final redirect URL or authorization code." }});
+  while (true) {{
+    try {{
+      const value = (await fs.readFile(manualCodePath, "utf8")).trim();
+      if (value) {{
+        await fs.unlink(manualCodePath).catch(() => {{}});
+        return value;
+      }}
+    }} catch (error) {{
+      if (error?.code !== "ENOENT") throw error;
+    }}
+    await new Promise((resolve) => setTimeout(resolve, 300));
+  }}
+}}
+if (!provider) {{
+  throw new Error(`Unsupported OAuth provider: ${{providerId}}`);
+}}
+emit({{ type: "started", message: `Starting OAuth login for ${{provider.name}}` }});
+await auth.login(providerId, {{
+  onAuth: (info) => emit({{ type: "auth", url: info.url, instructions: info.instructions }}),
+  onDeviceCode: (info) => emit({{
+    type: "deviceCode",
+    verificationUri: info.verificationUri,
+    userCode: info.userCode,
+    intervalSeconds: info.intervalSeconds,
+    expiresInSeconds: info.expiresInSeconds,
+  }}),
+  onPrompt: async (prompt) => {{
+    emit({{ type: "prompt", message: prompt.message, placeholder: prompt.placeholder, allowEmpty: prompt.allowEmpty }});
+    return "";
+  }},
+  onSelect: async (prompt) => {{
+    const selected = providerId === "openai-codex" ? "browser" : prompt.options?.[0]?.id;
+    emit({{ type: "select", message: prompt.message, selected }});
+    return selected;
+  }},
+  onProgress: (message) => emit({{ type: "progress", message }}),
+  onManualCodeInput: waitForManualCode,
+}});
+emit({{ type: "success", message: `Logged in to ${{provider.name}}` }});
+"#,
+        package_index = serde_json::to_string(&format!("file://{}", package_index.display()))
+            .unwrap_or_default(),
+        provider_id = serde_json::to_string(provider_id).unwrap_or_default(),
+        auth_path = serde_json::to_string(&auth_path.display().to_string()).unwrap_or_default(),
+        login_id = serde_json::to_string(login_id).unwrap_or_default(),
+        manual_code_path =
+            serde_json::to_string(&manual_code_path.display().to_string()).unwrap_or_default()
+    )
+}
+
 fn validate_app_config(config: &AppConfig) -> AppResult<()> {
     validate_app_config_provider_ids(config)?;
 
@@ -784,6 +1800,16 @@ fn validate_provider(provider: &Provider) -> AppResult<()> {
             if matches!(provider.auth_mode, AuthMode::ApiKey) && provider.api_key.trim().is_empty()
             {
                 return Err(validation_error("API Key 不能为空"));
+            }
+            if matches!(provider.auth_mode, AuthMode::Account)
+                && provider
+                    .auth_account_id
+                    .as_deref()
+                    .unwrap_or_default()
+                    .trim()
+                    .is_empty()
+            {
+                return Err(validation_error("请选择认证账号"));
             }
             if let Some(advanced) = &provider.advanced {
                 validate_provider_advanced(advanced)?;
@@ -895,6 +1921,7 @@ fn validation_error(message: impl Into<String>) -> AppError {
 }
 
 fn normalize_app_config(mut config: AppConfig) -> AppConfig {
+    config.schema_version = SCHEMA_VERSION;
     config.providers = config
         .providers
         .into_iter()
@@ -974,7 +2001,24 @@ fn apply_provider(config: &AppConfig, provider_entry_id: &str, paths: &Paths) ->
     validate_provider(provider)?;
 
     let models_json = build_models_json(provider);
-    let auth_json = build_auth_json(provider, &paths.pi_auth_file)?;
+    let mut accounts = load_accounts_store_from_path(&paths.accounts_file)?;
+    let mut accounts_changed = false;
+    if let Some(replacing_provider_id) = provider_replaces_auth_provider_id(provider) {
+        let provider_account_id = provider_auth_account_id(provider);
+        let target_is_current = match provider_account_id {
+            Some(account_id) => {
+                account_matches_current_pi_auth(&accounts, account_id, &paths.pi_auth_file)?
+            }
+            None => false,
+        };
+        accounts_changed |= sync_current_pi_auth_to_matching_account(
+            &mut accounts,
+            &paths.pi_auth_file,
+            &replacing_provider_id,
+            provider_account_id.filter(|_| !target_is_current),
+        )?;
+    }
+    let auth_json = build_auth_json(provider, &paths.pi_auth_file, Some(&accounts))?;
     let settings_json = build_settings_json(provider, &paths.pi_settings_file)?;
     validate_pi_json(provider, &models_json, &auth_json, &settings_json)?;
 
@@ -1002,7 +2046,52 @@ fn apply_provider(config: &AppConfig, provider_entry_id: &str, paths: &Paths) ->
         "PI_SETTINGS_WRITE_FAILED",
         &written,
     )?;
+    accounts_changed |= mark_provider_account_applied(provider, &mut accounts);
+    if accounts_changed {
+        save_accounts_store_to_path(&paths.accounts_file, &accounts)?;
+    }
     Ok(())
+}
+
+fn provider_replaces_auth_provider_id(provider: &Provider) -> Option<String> {
+    let Provider::Official(provider) = provider else {
+        return None;
+    };
+    matches!(provider.auth_mode, AuthMode::ApiKey | AuthMode::Account)
+        .then(|| provider.provider_id.clone())
+}
+
+fn provider_auth_account_id(provider: &Provider) -> Option<&str> {
+    let Provider::Official(provider) = provider else {
+        return None;
+    };
+    if matches!(provider.auth_mode, AuthMode::Account) {
+        return provider.auth_account_id.as_deref();
+    }
+    None
+}
+
+fn mark_provider_account_applied(provider: &Provider, accounts: &mut AccountsStore) -> bool {
+    let Provider::Official(provider) = provider else {
+        return false;
+    };
+    if !matches!(provider.auth_mode, AuthMode::Account) {
+        return false;
+    }
+    let Some(account_id) = provider.auth_account_id.as_deref() else {
+        return false;
+    };
+    let Some(account) = accounts
+        .accounts
+        .iter_mut()
+        .find(|account| account.id == account_id)
+    else {
+        return false;
+    };
+    let now = now_timestamp_string();
+    account.last_applied_at = Some(now.clone());
+    account.updated_at = now;
+    true
 }
 
 fn build_models_json(provider: &Provider) -> Value {
@@ -1097,20 +2186,52 @@ fn build_models_json(provider: &Provider) -> Value {
     }
 }
 
-fn build_auth_json(provider: &Provider, path: &Path) -> AppResult<Value> {
+fn build_auth_json(
+    provider: &Provider,
+    path: &Path,
+    accounts: Option<&AccountsStore>,
+) -> AppResult<Value> {
     let mut auth = read_json_object(path, "PI_AUTH_WRITE_FAILED", "auth.json")?;
     if let Provider::Official(provider) = provider {
-        if matches!(provider.auth_mode, AuthMode::ApiKey) {
-            auth.insert(
-                provider.provider_id.clone(),
-                json!({
-                    "type": "api_key",
-                    "key": provider.api_key.trim()
-                }),
-            );
+        match provider.auth_mode {
+            AuthMode::ApiKey => {
+                auth.insert(
+                    provider.provider_id.clone(),
+                    create_api_key_credential(&provider.api_key),
+                );
+            }
+            AuthMode::Account => {
+                let account_id = provider
+                    .auth_account_id
+                    .as_deref()
+                    .filter(|value| !value.trim().is_empty())
+                    .ok_or_else(|| validation_error("请选择认证账号"))?;
+                let account = accounts
+                    .ok_or_else(|| validation_error("账号库未加载"))?
+                    .accounts
+                    .iter()
+                    .find(|account| account.id == account_id)
+                    .ok_or_else(|| validation_error("认证账号不存在"))?;
+                if account.provider_id != provider.provider_id {
+                    return Err(validation_error("认证账号与供应商不匹配"));
+                }
+                validate_account_credential(account)?;
+                auth.insert(provider.provider_id.clone(), account.credential.clone());
+            }
+            AuthMode::Existing => {}
         }
     }
     Ok(Value::Object(auth))
+}
+
+fn write_account_to_pi_auth(account: &AuthAccount, path: &Path) -> AppResult<()> {
+    validate_account_credential(account)?;
+    let mut auth = read_json_object(path, "PI_AUTH_WRITE_FAILED", "auth.json")?;
+    auth.insert(account.provider_id.clone(), account.credential.clone());
+    atomic_write_json(path, &Value::Object(auth)).map_err(|err| {
+        AppError::new("PI_AUTH_WRITE_FAILED", "写入 auth.json 失败")
+            .with_details(err.message_with_details())
+    })
 }
 
 fn build_settings_json(provider: &Provider, path: &Path) -> AppResult<Value> {
@@ -1798,6 +2919,7 @@ fn format_token_count(count: u64) -> String {
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .manage(OAuthLoginSessions::default())
         .setup(|app| {
             if let Some(window) = app.get_webview_window("main") {
                 let _ = window.set_title("Pi Switch");
@@ -1810,7 +2932,16 @@ pub fn run() {
             apply_provider_to_pi,
             test_provider,
             fetch_custom_provider_models,
-            list_pi_models
+            list_pi_models,
+            load_auth_accounts,
+            create_api_key_account,
+            rename_auth_account,
+            delete_auth_account,
+            duplicate_auth_account,
+            apply_auth_account,
+            import_pi_auth_account,
+            submit_oauth_manual_code,
+            login_official_provider_oauth
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
@@ -1826,6 +2957,7 @@ mod tests {
             name: "OpenAI Daily".to_string(),
             provider_id: "openai".to_string(),
             auth_mode: AuthMode::ApiKey,
+            auth_account_id: None,
             api_key: "  sk-test  ".to_string(),
             advanced: None,
             models: vec![ModelConfig {
@@ -1912,6 +3044,7 @@ mod tests {
             name: "OpenAI Daily".to_string(),
             provider_id: "openai".to_string(),
             auth_mode: AuthMode::Existing,
+            auth_account_id: None,
             api_key: "".to_string(),
             advanced: Some(ProviderAdvancedConfig {
                 base_url: Some(" https://proxy.example.com/v1 ".to_string()),
@@ -1977,7 +3110,7 @@ mod tests {
         )
         .unwrap();
 
-        let value = build_auth_json(&official_provider(), &path).unwrap();
+        let value = build_auth_json(&official_provider(), &path, None).unwrap();
         assert_eq!(
             value["openai"],
             json!({ "type": "api_key", "key": "sk-test" })
@@ -1996,7 +3129,7 @@ mod tests {
         )
         .unwrap();
 
-        let value = build_auth_json(&custom_provider(), &path).unwrap();
+        let value = build_auth_json(&custom_provider(), &path, None).unwrap();
         assert_eq!(value["openai"]["type"], "oauth");
         assert!(value.get("Relay").is_none());
     }
@@ -2011,9 +3144,501 @@ mod tests {
         )
         .unwrap();
 
-        let value = build_auth_json(&official_provider_with_custom_and_override(), &path).unwrap();
+        let value =
+            build_auth_json(&official_provider_with_custom_and_override(), &path, None).unwrap();
         assert_eq!(value["openai"]["type"], "oauth");
         assert_eq!(value["openai"]["accessToken"], "keep");
+    }
+
+    fn test_account(id: &str, provider_id: &str, token: &str) -> AuthAccount {
+        AuthAccount {
+            id: id.to_string(),
+            provider_id: provider_id.to_string(),
+            label: id.to_string(),
+            kind: AuthAccountKind::OAuth,
+            credential: json!({
+                "type": "oauth",
+                "accessToken": token
+            }),
+            created_at: "1".to_string(),
+            updated_at: "1".to_string(),
+            last_applied_at: None,
+            active_in_pi: false,
+        }
+    }
+
+    #[test]
+    fn generated_account_ids_are_unique_under_burst_creation() {
+        let mut ids = HashSet::new();
+        for _ in 0..1000 {
+            let id = create_account_id();
+            assert!(id.starts_with("account_"));
+            assert!(ids.insert(id));
+        }
+    }
+
+    #[test]
+    fn duplicate_account_copies_credential_with_new_identity() {
+        let mut account = test_account("codex_a", "openai-codex", "token-a");
+        account.label = "Codex Work".to_string();
+        account.last_applied_at = Some("100".to_string());
+        account.active_in_pi = true;
+        let mut store = AccountsStore {
+            version: ACCOUNTS_VERSION,
+            accounts: vec![account],
+        };
+
+        let duplicate = duplicate_auth_account_in_store(&mut store, "codex_a").unwrap();
+
+        assert_ne!(duplicate.id, "codex_a");
+        assert_eq!(duplicate.label, "Codex Work Copy");
+        assert_eq!(duplicate.credential["accessToken"], "token-a");
+        assert!(duplicate.last_applied_at.is_none());
+        assert!(!duplicate.active_in_pi);
+        assert_eq!(store.accounts.len(), 2);
+    }
+
+    #[test]
+    fn account_view_does_not_serialize_credential() {
+        let account = test_account("codex_a", "openai-codex", "token-a");
+        let value = serde_json::to_value(account_to_view(&account)).unwrap();
+
+        assert!(value.get("credential").is_none());
+        assert_eq!(value["id"], "codex_a");
+        assert_eq!(value["providerId"], "openai-codex");
+        assert_eq!(value["kind"], "oauth");
+    }
+
+    #[test]
+    fn account_view_serializes_api_key_kind_for_frontend_contract() {
+        let account = AuthAccount {
+            id: "openai_key".to_string(),
+            provider_id: "openai".to_string(),
+            label: "OpenAI Key".to_string(),
+            kind: AuthAccountKind::ApiKey,
+            credential: create_api_key_credential("sk-account"),
+            created_at: "1".to_string(),
+            updated_at: "1".to_string(),
+            last_applied_at: None,
+            active_in_pi: false,
+        };
+        let value = serde_json::to_value(account_to_view(&account)).unwrap();
+
+        assert_eq!(value["kind"], "apiKey");
+    }
+
+    #[test]
+    fn accounts_store_loads_missing_version_and_accounts_as_v1_empty() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("accounts.json");
+        fs::write(&path, r#"{}"#).unwrap();
+
+        let store = load_accounts_store_from_path(&path).unwrap();
+
+        assert_eq!(store.version, ACCOUNTS_VERSION);
+        assert!(store.accounts.is_empty());
+    }
+
+    #[test]
+    fn accounts_store_save_creates_parent_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("missing").join("accounts.json");
+        let store = AccountsStore {
+            version: ACCOUNTS_VERSION,
+            accounts: vec![test_account("codex_a", "openai-codex", "token-a")],
+        };
+
+        save_accounts_store_to_path(&path, &store).unwrap();
+
+        let loaded = load_accounts_store_from_path(&path).unwrap();
+        assert_eq!(loaded.accounts.len(), 1);
+        assert_eq!(loaded.accounts[0].id, "codex_a");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                fs::metadata(path).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
+        }
+    }
+
+    #[test]
+    fn accounts_store_save_does_not_persist_active_in_pi_view_state() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("accounts.json");
+        let mut account = test_account("codex_a", "openai-codex", "token-a");
+        account.active_in_pi = true;
+        let store = AccountsStore {
+            version: ACCOUNTS_VERSION,
+            accounts: vec![account],
+        };
+
+        save_accounts_store_to_path(&path, &store).unwrap();
+
+        let raw: Value = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        assert!(raw["accounts"][0].get("activeInPi").is_none());
+        let loaded = load_accounts_store_from_path(&path).unwrap();
+        assert!(!loaded.accounts[0].active_in_pi);
+    }
+
+    #[test]
+    fn accounts_store_rejects_unsupported_version() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("accounts.json");
+        fs::write(&path, r#"{ "version": 999, "accounts": [] }"#).unwrap();
+
+        let err = load_accounts_store_from_path(&path).unwrap_err();
+
+        assert_eq!(err.code, "UNSUPPORTED_ACCOUNTS_VERSION");
+        assert!(err.message.contains("999"));
+    }
+
+    #[test]
+    fn accounts_store_loads_legacy_oauth_kind_spelling() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("accounts.json");
+        fs::write(
+            &path,
+            r#"{
+              "version": 1,
+              "accounts": [{
+                "id": "codex_a",
+                "providerId": "openai-codex",
+                "label": "Codex A",
+                "kind": "oAuth",
+                "credential": { "type": "oauth", "accessToken": "token-a" },
+                "createdAt": "1",
+                "updatedAt": "1"
+              }]
+            }"#,
+        )
+        .unwrap();
+
+        let store = load_accounts_store_from_path(&path).unwrap();
+        let value = serde_json::to_value(account_to_view(&store.accounts[0])).unwrap();
+
+        assert_eq!(store.accounts[0].kind, AuthAccountKind::OAuth);
+        assert_eq!(value["kind"], "oauth");
+    }
+
+    fn official_provider_using_account(account_id: &str) -> Provider {
+        let mut provider = match official_provider_with_custom_and_override() {
+            Provider::Official(provider) => provider,
+            Provider::Custom(_) => unreachable!(),
+        };
+        provider.provider_id = "openai-codex".to_string();
+        provider.auth_mode = AuthMode::Account;
+        provider.auth_account_id = Some(account_id.to_string());
+        Provider::Official(provider)
+    }
+
+    #[test]
+    fn clear_deleted_account_bindings_resets_official_providers() {
+        let mut bound = match official_provider_using_account("codex_a") {
+            Provider::Official(provider) => provider,
+            Provider::Custom(_) => unreachable!(),
+        };
+        bound.id = "provider_bound".to_string();
+        let mut other = match official_provider_using_account("codex_b") {
+            Provider::Official(provider) => provider,
+            Provider::Custom(_) => unreachable!(),
+        };
+        other.id = "provider_other".to_string();
+        let mut config = AppConfig {
+            schema_version: SCHEMA_VERSION,
+            language: None,
+            theme: ThemeMode::System,
+            active_provider_id: Some("provider_bound".to_string()),
+            providers: vec![
+                Provider::Official(bound),
+                Provider::Official(other),
+                custom_provider(),
+            ],
+        };
+
+        let changed = clear_deleted_account_bindings(&mut config, "codex_a");
+
+        assert!(changed);
+        let Provider::Official(bound) = &config.providers[0] else {
+            unreachable!();
+        };
+        assert!(matches!(bound.auth_mode, AuthMode::Existing));
+        assert!(bound.auth_account_id.is_none());
+        let Provider::Official(other) = &config.providers[1] else {
+            unreachable!();
+        };
+        assert!(matches!(other.auth_mode, AuthMode::Account));
+        assert_eq!(other.auth_account_id.as_deref(), Some("codex_b"));
+    }
+
+    #[test]
+    fn clear_deleted_account_bindings_in_config_file_updates_saved_config() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.json");
+        let config = AppConfig {
+            schema_version: SCHEMA_VERSION,
+            language: None,
+            theme: ThemeMode::System,
+            active_provider_id: Some("provider_official".to_string()),
+            providers: vec![official_provider_using_account("codex_a")],
+        };
+        atomic_write_json(&path, &config).unwrap();
+
+        clear_deleted_account_bindings_in_config_file(&path, "codex_a").unwrap();
+
+        let saved: AppConfig = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        let Provider::Official(provider) = &saved.providers[0] else {
+            unreachable!();
+        };
+        assert!(matches!(provider.auth_mode, AuthMode::Existing));
+        assert!(provider.auth_account_id.is_none());
+        clear_deleted_account_bindings_in_config_file(&dir.path().join("missing.json"), "codex_a")
+            .unwrap();
+    }
+
+    #[test]
+    fn multiple_same_provider_accounts_can_switch_pi_auth() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("auth.json");
+        let account_a = test_account("codex_a", "openai-codex", "token-a");
+        let account_b = test_account("codex_b", "openai-codex", "token-b");
+
+        write_account_to_pi_auth(&account_a, &path).unwrap();
+        let value: Value = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(value["openai-codex"]["accessToken"], "token-a");
+
+        write_account_to_pi_auth(&account_b, &path).unwrap();
+        let value: Value = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(value["openai-codex"]["accessToken"], "token-b");
+    }
+
+    #[test]
+    fn official_account_auth_mode_writes_selected_account_credential() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("auth.json");
+        fs::write(
+            &path,
+            r#"{ "anthropic": { "type": "oauth", "accessToken": "keep" } }"#,
+        )
+        .unwrap();
+        let store = AccountsStore {
+            version: ACCOUNTS_VERSION,
+            accounts: vec![
+                test_account("codex_a", "openai-codex", "token-a"),
+                test_account("codex_b", "openai-codex", "token-b"),
+            ],
+        };
+
+        let value = build_auth_json(
+            &official_provider_using_account("codex_b"),
+            &path,
+            Some(&store),
+        )
+        .unwrap();
+
+        assert_eq!(value["openai-codex"]["accessToken"], "token-b");
+        assert_eq!(value["anthropic"]["accessToken"], "keep");
+    }
+
+    #[test]
+    fn api_key_accounts_can_be_applied_to_pi_auth() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("auth.json");
+        let account = AuthAccount {
+            id: "openai_key".to_string(),
+            provider_id: "openai".to_string(),
+            label: "OpenAI Key".to_string(),
+            kind: AuthAccountKind::ApiKey,
+            credential: create_api_key_credential("sk-account"),
+            created_at: "1".to_string(),
+            updated_at: "1".to_string(),
+            last_applied_at: None,
+            active_in_pi: false,
+        };
+
+        write_account_to_pi_auth(&account, &path).unwrap();
+        let value: Value = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(
+            value["openai"],
+            json!({ "type": "api_key", "key": "sk-account" })
+        );
+    }
+
+    #[test]
+    fn api_key_accounts_are_not_fuzzy_synced_from_external_pi_auth() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("auth.json");
+        fs::write(
+            &path,
+            r#"{ "openai": { "type": "api_key", "key": "sk-external" } }"#,
+        )
+        .unwrap();
+        let mut store = AccountsStore {
+            version: ACCOUNTS_VERSION,
+            accounts: vec![AuthAccount {
+                id: "openai_key".to_string(),
+                provider_id: "openai".to_string(),
+                label: "OpenAI Key".to_string(),
+                kind: AuthAccountKind::ApiKey,
+                credential: create_api_key_credential("sk-saved"),
+                created_at: "1".to_string(),
+                updated_at: "1".to_string(),
+                last_applied_at: Some("100".to_string()),
+                active_in_pi: false,
+            }],
+        };
+
+        let changed = annotate_active_accounts(&mut store, &path);
+
+        assert!(!changed);
+        assert!(!store.accounts[0].active_in_pi);
+        assert_eq!(store.accounts[0].credential["key"], "sk-saved");
+    }
+
+    #[test]
+    fn active_account_status_is_derived_from_current_pi_auth() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("auth.json");
+        fs::write(
+            &path,
+            r#"{ "openai-codex": { "type": "oauth", "accessToken": "token-b" } }"#,
+        )
+        .unwrap();
+        let mut store = AccountsStore {
+            version: ACCOUNTS_VERSION,
+            accounts: vec![
+                test_account("codex_a", "openai-codex", "token-a"),
+                test_account("codex_b", "openai-codex", "token-b"),
+            ],
+        };
+
+        let _ = annotate_active_accounts(&mut store, &path);
+
+        assert!(!store.accounts[0].active_in_pi);
+        assert!(store.accounts[1].active_in_pi);
+    }
+
+    #[test]
+    fn active_status_syncs_refreshed_pi_auth_on_load() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("auth.json");
+        fs::write(
+            &path,
+            r#"{ "openai-codex": { "type": "oauth", "accessToken": "token-a-refreshed" } }"#,
+        )
+        .unwrap();
+        let mut account = test_account("codex_a", "openai-codex", "token-a");
+        account.last_applied_at = Some("100".to_string());
+        let mut store = AccountsStore {
+            version: ACCOUNTS_VERSION,
+            accounts: vec![account],
+        };
+
+        let changed = annotate_active_accounts(&mut store, &path);
+
+        assert!(changed);
+        assert!(store.accounts[0].active_in_pi);
+        assert_eq!(
+            store.accounts[0].credential["accessToken"],
+            "token-a-refreshed"
+        );
+    }
+
+    #[test]
+    fn syncs_refreshed_current_pi_oauth_back_before_switching_accounts() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("auth.json");
+        fs::write(
+            &path,
+            r#"{ "openai-codex": { "type": "oauth", "accessToken": "token-a-refreshed" } }"#,
+        )
+        .unwrap();
+        let mut account_a = test_account("codex_a", "openai-codex", "token-a");
+        account_a.last_applied_at = Some("100".to_string());
+        let account_b = test_account("codex_b", "openai-codex", "token-b");
+        let mut store = AccountsStore {
+            version: ACCOUNTS_VERSION,
+            accounts: vec![account_a, account_b],
+        };
+
+        sync_current_pi_auth_to_matching_account(
+            &mut store,
+            &path,
+            "openai-codex",
+            Some("codex_b"),
+        )
+        .unwrap();
+        write_account_to_pi_auth(&store.accounts[1], &path).unwrap();
+
+        assert_eq!(
+            store.accounts[0].credential["accessToken"],
+            "token-a-refreshed"
+        );
+        let value: Value = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(value["openai-codex"]["accessToken"], "token-b");
+    }
+
+    #[test]
+    fn sync_before_switch_excludes_target_account() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("auth.json");
+        fs::write(
+            &path,
+            r#"{ "openai-codex": { "type": "oauth", "accessToken": "token-current" } }"#,
+        )
+        .unwrap();
+        let mut target = test_account("codex_target", "openai-codex", "token-target");
+        target.last_applied_at = Some("100".to_string());
+        let mut store = AccountsStore {
+            version: ACCOUNTS_VERSION,
+            accounts: vec![target],
+        };
+
+        sync_current_pi_auth_to_matching_account(
+            &mut store,
+            &path,
+            "openai-codex",
+            Some("codex_target"),
+        )
+        .unwrap();
+
+        assert_eq!(store.accounts[0].credential["accessToken"], "token-target");
+    }
+
+    #[test]
+    fn reapplying_current_account_syncs_refreshed_credential_to_target() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("auth.json");
+        fs::write(
+            &path,
+            r#"{ "openai-codex": { "type": "oauth", "accessToken": "token-a-refreshed" } }"#,
+        )
+        .unwrap();
+        let mut account = test_account("codex_a", "openai-codex", "token-a");
+        account.last_applied_at = Some("100".to_string());
+        let mut store = AccountsStore {
+            version: ACCOUNTS_VERSION,
+            accounts: vec![account],
+        };
+
+        let target_is_current = account_matches_current_pi_auth(&store, "codex_a", &path).unwrap();
+        sync_current_pi_auth_to_matching_account(
+            &mut store,
+            &path,
+            "openai-codex",
+            (!target_is_current).then_some("codex_a"),
+        )
+        .unwrap();
+        write_account_to_pi_auth(&store.accounts[0], &path).unwrap();
+
+        assert!(target_is_current);
+        assert_eq!(
+            store.accounts[0].credential["accessToken"],
+            "token-a-refreshed"
+        );
+        let value: Value = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(value["openai-codex"]["accessToken"], "token-a-refreshed");
     }
 
     #[test]
@@ -2144,6 +3769,108 @@ mod tests {
     }
 
     #[test]
+    fn oauth_login_script_defaults_openai_codex_to_browser_login() {
+        let script = oauth_login_script(
+            Path::new("/tmp/pi package/dist/index.js"),
+            "openai-codex",
+            Path::new("/tmp/oauth auth/auth.json"),
+            "oauth_test",
+            Path::new("/tmp/oauth auth/manual-code.txt"),
+        );
+        assert!(script.contains("\"file:///tmp/pi package/dist/index.js\""));
+        assert!(script.contains("\"/tmp/oauth auth/auth.json\""));
+        assert!(script.contains("\"/tmp/oauth auth/manual-code.txt\""));
+        assert!(script.contains("const providerId = \"openai-codex\";"));
+        assert!(script.contains("const loginId = \"oauth_test\";"));
+        assert!(script.contains("providerId === \"openai-codex\" ? \"browser\""));
+        assert!(script.contains("type: \"manualCode\""));
+        assert!(script.contains("onManualCodeInput: waitForManualCode"));
+        assert!(!script.contains("oauth-login"));
+    }
+
+    #[test]
+    fn oauth_event_serializes_login_id_for_frontend_manual_code() {
+        let event = OAuthEvent {
+            event_type: "manualCode".to_string(),
+            login_id: Some("oauth_test".to_string()),
+            provider_id: "openai-codex".to_string(),
+            provider_name: Some("ChatGPT Plus/Pro (Codex Subscription)".to_string()),
+            message: Some("Paste code".to_string()),
+            url: None,
+            instructions: None,
+            verification_uri: None,
+            user_code: None,
+            interval_seconds: None,
+            expires_in_seconds: None,
+            selected: None,
+        };
+
+        let value = serde_json::to_value(event).unwrap();
+
+        assert_eq!(value["type"], "manualCode");
+        assert_eq!(value["loginId"], "oauth_test");
+        assert_eq!(value["providerId"], "openai-codex");
+    }
+
+    #[test]
+    fn submit_oauth_manual_code_writes_registered_session_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let manual_code_file = dir.path().join("manual-code.txt");
+        let sessions = OAuthLoginSessions::default();
+        register_oauth_login_session(&sessions, "oauth_test", &manual_code_file).unwrap();
+
+        let input = SubmitOAuthManualCodeInput {
+            login_id: "oauth_test".to_string(),
+            code: "  https://localhost/callback?code=abc  ".to_string(),
+        };
+
+        submit_oauth_manual_code_to_session(&sessions, input).unwrap();
+
+        assert_eq!(
+            fs::read_to_string(manual_code_file).unwrap(),
+            "https://localhost/callback?code=abc"
+        );
+    }
+
+    #[test]
+    fn oauth_login_session_guard_cleans_registration_and_manual_code_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let manual_code_file = dir.path().join("manual-code.txt");
+        let sessions = OAuthLoginSessions::default();
+        fs::write(&manual_code_file, "stale-code").unwrap();
+
+        {
+            let _guard = OAuthLoginSessionGuard::register(
+                &sessions,
+                "oauth_test".to_string(),
+                manual_code_file.clone(),
+            )
+            .unwrap();
+            assert!(sessions
+                .manual_code_files
+                .lock()
+                .unwrap()
+                .contains_key("oauth_test"));
+        }
+
+        assert!(!manual_code_file.exists());
+        assert!(!sessions
+            .manual_code_files
+            .lock()
+            .unwrap()
+            .contains_key("oauth_test"));
+        let err = submit_oauth_manual_code_to_session(
+            &sessions,
+            SubmitOAuthManualCodeInput {
+                login_id: "oauth_test".to_string(),
+                code: "code".to_string(),
+            },
+        )
+        .unwrap_err();
+        assert_eq!(err.code, "VALIDATION_FAILED");
+    }
+
+    #[test]
     fn parses_pi_models_json() {
         let output = r#"
 [
@@ -2261,6 +3988,35 @@ openai    o3-mini                200K     100K     yes       no
     }
 
     #[test]
+    fn normalize_config_migrates_v2_official_provider_defaults() {
+        let config: AppConfig = serde_json::from_value(json!({
+            "schemaVersion": 2,
+            "theme": "system",
+            "activeProviderId": "provider_official",
+            "providers": [{
+                "kind": "official",
+                "id": "provider_official",
+                "name": "OpenAI",
+                "providerId": "openai",
+                "models": [{ "id": "gpt-5.5" }],
+                "defaultModelId": "gpt-5.5"
+            }]
+        }))
+        .unwrap();
+
+        let normalized = normalize_app_config(config);
+
+        assert_eq!(normalized.schema_version, SCHEMA_VERSION);
+        let Provider::Official(provider) = &normalized.providers[0] else {
+            unreachable!();
+        };
+        assert!(matches!(provider.auth_mode, AuthMode::Existing));
+        assert!(provider.auth_account_id.is_none());
+        assert_eq!(provider.api_key, "");
+        validate_app_config(&normalized).unwrap();
+    }
+
+    #[test]
     fn apply_provider_writes_pi_files_in_expected_shape() {
         let dir = tempfile::tempdir().unwrap();
         let pi_agent_dir = dir.path().join(".pi").join("agent");
@@ -2279,6 +4035,7 @@ openai    o3-mini                200K     100K     yes       no
         let paths = Paths {
             app_config_dir: dir.path().join("PiSwitch"),
             app_config_file: dir.path().join("PiSwitch").join("config.json"),
+            accounts_file: dir.path().join("PiSwitch").join("accounts.json"),
             pi_agent_dir: pi_agent_dir.clone(),
             pi_models_file: pi_agent_dir.join("models.json"),
             pi_auth_file: pi_agent_dir.join("auth.json"),
@@ -2311,6 +4068,127 @@ openai    o3-mini                200K     100K     yes       no
     }
 
     #[test]
+    fn apply_provider_api_key_mode_persists_refreshed_previous_oauth_account() {
+        let dir = tempfile::tempdir().unwrap();
+        let app_config_dir = dir.path().join("PiSwitch");
+        let pi_agent_dir = dir.path().join(".pi").join("agent");
+        fs::create_dir_all(&pi_agent_dir).unwrap();
+        fs::create_dir_all(&app_config_dir).unwrap();
+        fs::write(
+            pi_agent_dir.join("auth.json"),
+            r#"{ "openai-codex": { "type": "oauth", "accessToken": "token-a-refreshed" } }"#,
+        )
+        .unwrap();
+        fs::write(pi_agent_dir.join("settings.json"), r#"{}"#).unwrap();
+        let mut account = test_account("codex_a", "openai-codex", "token-a");
+        account.last_applied_at = Some("100".to_string());
+        save_accounts_store_to_path(
+            &app_config_dir.join("accounts.json"),
+            &AccountsStore {
+                version: ACCOUNTS_VERSION,
+                accounts: vec![account],
+            },
+        )
+        .unwrap();
+        let paths = Paths {
+            app_config_dir: app_config_dir.clone(),
+            app_config_file: app_config_dir.join("config.json"),
+            accounts_file: app_config_dir.join("accounts.json"),
+            pi_agent_dir: pi_agent_dir.clone(),
+            pi_models_file: pi_agent_dir.join("models.json"),
+            pi_auth_file: pi_agent_dir.join("auth.json"),
+            pi_settings_file: pi_agent_dir.join("settings.json"),
+            home: dir.path().to_path_buf(),
+        };
+        let mut provider = match official_provider() {
+            Provider::Official(provider) => provider,
+            Provider::Custom(_) => unreachable!(),
+        };
+        provider.provider_id = "openai-codex".to_string();
+        provider.auth_mode = AuthMode::ApiKey;
+        provider.api_key = "sk-new".to_string();
+        provider.models[0].id = "codex-test-model".to_string();
+        provider.default_model_id = "codex-test-model".to_string();
+        let config = AppConfig {
+            schema_version: SCHEMA_VERSION,
+            language: None,
+            theme: ThemeMode::System,
+            active_provider_id: Some(provider.id.clone()),
+            providers: vec![Provider::Official(provider)],
+        };
+
+        apply_provider(&config, "provider_official", &paths).unwrap();
+
+        let store = load_accounts_store_from_path(&paths.accounts_file).unwrap();
+        assert_eq!(
+            store.accounts[0].credential["accessToken"],
+            "token-a-refreshed"
+        );
+        let auth: Value =
+            serde_json::from_str(&fs::read_to_string(paths.pi_auth_file).unwrap()).unwrap();
+        assert_eq!(auth["openai-codex"]["key"], "sk-new");
+    }
+
+    #[test]
+    fn apply_provider_account_mode_reapplying_current_account_keeps_refreshed_oauth() {
+        let dir = tempfile::tempdir().unwrap();
+        let app_config_dir = dir.path().join("PiSwitch");
+        let pi_agent_dir = dir.path().join(".pi").join("agent");
+        fs::create_dir_all(&pi_agent_dir).unwrap();
+        fs::create_dir_all(&app_config_dir).unwrap();
+        fs::write(
+            pi_agent_dir.join("auth.json"),
+            r#"{ "openai-codex": { "type": "oauth", "accessToken": "token-a-refreshed" } }"#,
+        )
+        .unwrap();
+        fs::write(pi_agent_dir.join("settings.json"), r#"{}"#).unwrap();
+        let mut account = test_account("codex_a", "openai-codex", "token-a");
+        account.last_applied_at = Some("100".to_string());
+        save_accounts_store_to_path(
+            &app_config_dir.join("accounts.json"),
+            &AccountsStore {
+                version: ACCOUNTS_VERSION,
+                accounts: vec![account],
+            },
+        )
+        .unwrap();
+        let paths = Paths {
+            app_config_dir: app_config_dir.clone(),
+            app_config_file: app_config_dir.join("config.json"),
+            accounts_file: app_config_dir.join("accounts.json"),
+            pi_agent_dir: pi_agent_dir.clone(),
+            pi_models_file: pi_agent_dir.join("models.json"),
+            pi_auth_file: pi_agent_dir.join("auth.json"),
+            pi_settings_file: pi_agent_dir.join("settings.json"),
+            home: dir.path().to_path_buf(),
+        };
+        let mut provider = match official_provider_using_account("codex_a") {
+            Provider::Official(provider) => provider,
+            Provider::Custom(_) => unreachable!(),
+        };
+        provider.models[0].id = "codex-test-model".to_string();
+        provider.default_model_id = "codex-test-model".to_string();
+        let config = AppConfig {
+            schema_version: SCHEMA_VERSION,
+            language: None,
+            theme: ThemeMode::System,
+            active_provider_id: Some(provider.id.clone()),
+            providers: vec![Provider::Official(provider)],
+        };
+
+        apply_provider(&config, "provider_official", &paths).unwrap();
+
+        let store = load_accounts_store_from_path(&paths.accounts_file).unwrap();
+        assert_eq!(
+            store.accounts[0].credential["accessToken"],
+            "token-a-refreshed"
+        );
+        let auth: Value =
+            serde_json::from_str(&fs::read_to_string(paths.pi_auth_file).unwrap()).unwrap();
+        assert_eq!(auth["openai-codex"]["accessToken"], "token-a-refreshed");
+    }
+
+    #[test]
     fn apply_provider_ignores_unselected_incomplete_provider() {
         let dir = tempfile::tempdir().unwrap();
         let pi_agent_dir = dir.path().join(".pi").join("agent");
@@ -2318,6 +4196,7 @@ openai    o3-mini                200K     100K     yes       no
         let paths = Paths {
             app_config_dir: dir.path().join("PiSwitch"),
             app_config_file: dir.path().join("PiSwitch").join("config.json"),
+            accounts_file: dir.path().join("PiSwitch").join("accounts.json"),
             pi_agent_dir: pi_agent_dir.clone(),
             pi_models_file: pi_agent_dir.join("models.json"),
             pi_auth_file: pi_agent_dir.join("auth.json"),

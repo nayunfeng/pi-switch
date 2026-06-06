@@ -1,7 +1,7 @@
 export type Language = "zh-CN" | "en-US";
 export type ThemeMode = "system" | "light" | "dark";
 export type ProviderKind = "official" | "custom";
-export type AuthMode = "existing" | "apiKey";
+export type AuthMode = "existing" | "account" | "apiKey";
 
 export type OfficialProviderId =
   | "amazon-bedrock"
@@ -39,6 +39,30 @@ export type OfficialProviderId =
   | "xiaomi-token-plan-cn"
   | "xiaomi-token-plan-ams"
   | "xiaomi-token-plan-sgp";
+
+export type OAuthLoginEvent =
+  | { type: "started"; loginId?: string; providerId: OfficialProviderId; providerName?: string; message?: string }
+  | { type: "auth"; loginId?: string; providerId: OfficialProviderId; providerName?: string; url: string; instructions?: string }
+  | {
+      type: "deviceCode";
+      loginId?: string;
+      providerId: OfficialProviderId;
+      providerName?: string;
+      verificationUri: string;
+      userCode: string;
+      intervalSeconds?: number;
+      expiresInSeconds?: number;
+    }
+  | { type: "manualCode"; loginId: string; providerId: OfficialProviderId; providerName?: string; message?: string }
+  | { type: "prompt"; loginId?: string; providerId: OfficialProviderId; providerName?: string; message: string; placeholder?: string; allowEmpty?: boolean }
+  | { type: "select"; loginId?: string; providerId: OfficialProviderId; providerName?: string; message: string; selected?: string; options?: { id: string; label: string }[] }
+  | { type: "progress"; loginId?: string; providerId: OfficialProviderId; providerName?: string; message: string }
+  | { type: "success"; loginId?: string; providerId: OfficialProviderId; providerName?: string; message?: string };
+
+export type OAuthLoginResult = {
+  providerId: OfficialProviderId;
+  providerName: string;
+};
 
 export type ApiType =
   | "openai-completions"
@@ -158,6 +182,7 @@ export type OfficialProvider = {
   name: string;
   providerId: OfficialProviderId;
   authMode: AuthMode;
+  authAccountId?: string;
   apiKey: string;
   advanced?: ProviderAdvancedConfig;
   models: ModelConfig[];
@@ -181,11 +206,29 @@ export type CustomProvider = {
 export type Provider = OfficialProvider | CustomProvider;
 
 export type AppConfig = {
-  schemaVersion: 2;
+  schemaVersion: 3;
   language?: Language;
   theme: ThemeMode;
   activeProviderId?: string;
   providers: Provider[];
+};
+
+export type AuthAccountKind = "oauth" | "apiKey";
+
+export type AuthAccount = {
+  id: string;
+  providerId: OfficialProviderId;
+  label: string;
+  kind: AuthAccountKind;
+  createdAt: string;
+  updatedAt: string;
+  lastAppliedAt?: string;
+  activeInPi?: boolean;
+};
+
+export type AccountsStore = {
+  version: 1;
+  accounts: AuthAccount[];
 };
 
 export type ResolvedPaths = {
@@ -295,6 +338,12 @@ export const OFFICIAL_PROVIDER_LABELS: Record<OfficialProviderId, string> = {
   "xiaomi-token-plan-sgp": "Xiaomi MiMo Token Plan SGP",
 };
 
+export const OAUTH_PROVIDER_IDS = ["anthropic", "github-copilot", "openai-codex"] as const satisfies readonly OfficialProviderId[];
+
+export function supportsOAuthLogin(providerId: OfficialProviderId) {
+  return (OAUTH_PROVIDER_IDS as readonly OfficialProviderId[]).includes(providerId);
+}
+
 export const API_PRESETS: ApiType[] = [
   "openai-completions",
   "mistral-conversations",
@@ -309,7 +358,7 @@ export const API_PRESETS: ApiType[] = [
 
 export function defaultConfig(): AppConfig {
   return {
-    schemaVersion: 2,
+    schemaVersion: 3,
     theme: "system",
     providers: [],
   };
@@ -322,6 +371,7 @@ export function createOfficialProvider(): OfficialProvider {
     name: "OpenAI",
     providerId: "openai",
     authMode: "existing",
+    authAccountId: undefined,
     apiKey: "",
     advanced: {},
     models: [],
@@ -382,6 +432,8 @@ function normalizeProvider(provider: Provider): Provider {
   if (provider.kind === "official") {
     return omitUndefined({
       ...provider,
+      authMode: provider.authMode ?? "existing",
+      authAccountId: normalizeOptionalString(provider.authAccountId),
       advanced: normalizeProviderAdvanced(provider.advanced),
       models: provider.models.map(normalizeModelConfig),
     });
@@ -473,6 +525,7 @@ export function validationErrors(provider: Provider | undefined) {
   }
   if (!provider.name.trim()) errors.name = "REQUIRED";
   if (provider.kind === "official" && provider.authMode === "apiKey" && !provider.apiKey.trim()) errors.apiKey = "REQUIRED";
+  if (provider.kind === "official" && provider.authMode === "account" && !provider.authAccountId?.trim()) errors.authAccountId = "REQUIRED";
   if (provider.kind === "custom" && !provider.apiKey.trim()) errors.apiKey = "REQUIRED";
   if (enabledModels(provider).length === 0) errors.models = "MODEL_REQUIRED";
   if (!enabledModels(provider).some((model) => model.id === provider.defaultModelId)) {

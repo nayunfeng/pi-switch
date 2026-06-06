@@ -225,6 +225,37 @@ label > span,
   background: var(--surface-muted);
 }
 
+.account-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1.2fr) minmax(150px, 0.9fr) 90px 110px auto;
+  gap: 8px;
+  align-items: center;
+  padding: 8px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: var(--surface-muted);
+  cursor: pointer;
+}
+
+.account-row.active {
+  border-color: var(--accent);
+  background: var(--accent-weak);
+}
+
+.account-row:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.filter-control {
+  display: grid;
+  grid-template-columns: auto minmax(180px, 260px);
+  gap: 8px;
+  align-items: center;
+  color: var(--muted);
+  font-size: 12px;
+}
+
 .model-id {
   overflow-wrap: anywhere;
   font-family: Consolas, "SFMono-Regular", monospace;
@@ -263,6 +294,11 @@ label > span,
   overflow-wrap: anywhere;
   color: var(--muted);
   font-size: 12px;
+}
+
+.oauth-event {
+  overflow-wrap: anywhere;
+  font-family: Consolas, "SFMono-Regular", monospace;
 }
 
 .checkbox-row {

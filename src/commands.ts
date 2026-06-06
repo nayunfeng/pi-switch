@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { AppConfig, AppError, OfficialProviderId, PiModelInfo, ResolvedPaths, TestProviderResult } from "./domain";
+import type { AccountsStore, AppConfig, AppError, AuthAccount, OfficialProviderId, PiModelInfo, ResolvedPaths, TestProviderResult } from "./domain";
 
 type TauriInternals = {
   invoke?: typeof invoke;
@@ -44,4 +44,56 @@ export async function listPiModels(providerId: OfficialProviderId, apiKey?: stri
     input: { providerId, apiKey: apiKey?.trim() || undefined },
   });
   return result.models;
+}
+
+export async function loadAuthAccounts() {
+  return tauriInvoke<AccountsStore>("load_auth_accounts");
+}
+
+export async function submitOAuthManualCode(loginId: string, code: string) {
+  return tauriInvoke<void>("submit_oauth_manual_code", {
+    input: { loginId, code },
+  });
+}
+
+export async function createApiKeyAccount(providerId: OfficialProviderId, label: string, apiKey: string) {
+  return tauriInvoke<AuthAccount>("create_api_key_account", {
+    input: { providerId, label, apiKey },
+  });
+}
+
+export async function renameAuthAccount(accountId: string, label: string) {
+  return tauriInvoke<AuthAccount>("rename_auth_account", {
+    input: { accountId, label },
+  });
+}
+
+export async function deleteAuthAccount(accountId: string) {
+  return tauriInvoke<void>("delete_auth_account", {
+    input: { accountId },
+  });
+}
+
+export async function duplicateAuthAccount(accountId: string) {
+  return tauriInvoke<AuthAccount>("duplicate_auth_account", {
+    input: { accountId },
+  });
+}
+
+export async function applyAuthAccount(accountId: string) {
+  return tauriInvoke<AuthAccount>("apply_auth_account", {
+    input: { accountId },
+  });
+}
+
+export async function importPiAuthAccount(providerId: OfficialProviderId, label?: string) {
+  return tauriInvoke<AuthAccount>("import_pi_auth_account", {
+    input: { providerId, label },
+  });
+}
+
+export async function loginOfficialProviderOAuth(providerId: OfficialProviderId, label?: string) {
+  return tauriInvoke<{ account: AuthAccount; providerName: string }>("login_official_provider_oauth", {
+    input: { providerId, label },
+  });
 }
