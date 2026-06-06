@@ -2109,6 +2109,41 @@ mod tests {
     }
 
     #[test]
+    fn app_config_ipc_routing_reaches_pi_models_json() {
+        let config: AppConfig = serde_json::from_value(json!({
+            "schemaVersion": SCHEMA_VERSION,
+            "theme": "system",
+            "activeProviderId": "provider_custom",
+            "providers": [{
+                "kind": "custom",
+                "id": "provider_custom",
+                "name": "Relay",
+                "baseUrl": "https://relay.example.com/v1",
+                "api": "openai-completions",
+                "apiKey": "relay-key",
+                "compat": {
+                    "openRouterRouting": {
+                        "allowFallbacks": true,
+                        "requireParameters": false,
+                        "dataCollection": "deny",
+                        "enforceDistillableText": true
+                    }
+                },
+                "models": [{ "id": "gpt-5.5", "source": "custom" }],
+                "defaultModelId": "gpt-5.5"
+            }]
+        }))
+        .unwrap();
+
+        let models = build_models_json(&config.providers[0]);
+        let routing = &models["providers"]["Relay"]["compat"]["openRouterRouting"];
+        assert_eq!(routing["allow_fallbacks"], true);
+        assert_eq!(routing["require_parameters"], false);
+        assert_eq!(routing["data_collection"], "deny");
+        assert_eq!(routing["enforce_distillable_text"], true);
+    }
+
+    #[test]
     fn parses_pi_models_json() {
         let output = r#"
 [
