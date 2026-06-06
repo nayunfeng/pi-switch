@@ -68,11 +68,11 @@ export type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhi
 export type ThinkingLevelMap = Partial<Record<ThinkingLevel, string | null>>;
 
 export type OpenRouterRouting = {
-  allow_fallbacks?: boolean;
-  require_parameters?: boolean;
-  data_collection?: "allow" | "deny" | "";
+  allowFallbacks?: boolean;
+  requireParameters?: boolean;
+  dataCollection?: "allow" | "deny" | "";
   zdr?: boolean;
-  enforce_distillable_text?: boolean;
+  enforceDistillableText?: boolean;
   order?: string[];
   only?: string[];
   ignore?: string[];
@@ -365,16 +365,104 @@ export function piProviderId(provider: Provider) {
 }
 
 export function normalizeConfig(config: AppConfig): AppConfig {
+  const providers = (config.providers ?? []).map(normalizeProvider);
   const activeProviderId =
-    config.activeProviderId && config.providers.some((provider) => provider.id === config.activeProviderId)
+    config.activeProviderId && providers.some((provider) => provider.id === config.activeProviderId)
       ? config.activeProviderId
-      : config.providers[0]?.id;
+      : providers[0]?.id;
   return {
     ...defaultConfig(),
     ...config,
     activeProviderId,
-    providers: config.providers ?? [],
+    providers,
   };
+}
+
+function normalizeProvider(provider: Provider): Provider {
+  if (provider.kind === "official") {
+    return omitUndefined({
+      ...provider,
+      advanced: normalizeProviderAdvanced(provider.advanced),
+      models: provider.models.map(normalizeModelConfig),
+    });
+  }
+  return omitUndefined({
+    ...provider,
+    headers: normalizeOptionalArray(provider.headers),
+    authHeader: normalizeOptionalBool(provider.authHeader),
+    compat: normalizeOptionalObject(provider.compat),
+    models: provider.models.map(normalizeModelConfig),
+  });
+}
+
+function normalizeProviderAdvanced(advanced: ProviderAdvancedConfig | null | undefined): ProviderAdvancedConfig | undefined {
+  if (!advanced) return undefined;
+  const normalized = omitUndefined({
+    ...advanced,
+    baseUrl: normalizeOptionalString(advanced.baseUrl),
+    api: normalizeOptionalString(advanced.api),
+    apiKey: normalizeOptionalString(advanced.apiKey),
+    headers: normalizeOptionalArray(advanced.headers),
+    authHeader: normalizeOptionalBool(advanced.authHeader),
+    compat: normalizeOptionalObject(advanced.compat),
+  });
+  return Object.keys(normalized).length > 0 ? normalized : undefined;
+}
+
+function normalizeModelConfig(model: ModelConfig): ModelConfig {
+  return omitUndefined({
+    ...model,
+    name: normalizeOptionalString(model.name),
+    api: normalizeOptionalString(model.api),
+    source: normalizeOptionalString(model.source) as ModelSource | undefined,
+    contextWindow: normalizePositiveNumber(model.contextWindow),
+    maxTokens: normalizePositiveNumber(model.maxTokens),
+    cost: normalizeCost(model.cost),
+    headers: normalizeOptionalArray(model.headers),
+    compat: normalizeOptionalObject(model.compat),
+    thinkingLevelMap: normalizeOptionalObject(model.thinkingLevelMap),
+  });
+}
+
+function normalizeCost(cost: CostConfig | null | undefined): CostConfig | undefined {
+  if (!cost) return undefined;
+  const normalized = omitUndefined({
+    input: normalizeNonNegativeNumber(cost.input),
+    output: normalizeNonNegativeNumber(cost.output),
+    cacheRead: normalizeNonNegativeNumber(cost.cacheRead),
+    cacheWrite: normalizeNonNegativeNumber(cost.cacheWrite),
+  });
+  return Object.keys(normalized).length > 0 ? normalized : undefined;
+}
+
+function normalizePositiveNumber(value: unknown) {
+  const number = typeof value === "number" ? value : typeof value === "string" && value.trim() !== "" ? Number(value) : undefined;
+  return number !== undefined && Number.isFinite(number) && number > 0 ? number : undefined;
+}
+
+function normalizeNonNegativeNumber(value: unknown) {
+  const number = typeof value === "number" ? value : typeof value === "string" && value.trim() !== "" ? Number(value) : undefined;
+  return number !== undefined && Number.isFinite(number) && number >= 0 ? number : undefined;
+}
+
+function normalizeOptionalString(value: unknown) {
+  return typeof value === "string" && value.trim() !== "" ? value : undefined;
+}
+
+function normalizeOptionalArray<T>(value: T[] | null | undefined) {
+  return Array.isArray(value) ? value : undefined;
+}
+
+function normalizeOptionalBool(value: unknown) {
+  return typeof value === "boolean" ? value : undefined;
+}
+
+function normalizeOptionalObject<T extends object>(value: T | null | undefined) {
+  return value && typeof value === "object" ? value : undefined;
+}
+
+function omitUndefined<T extends Record<string, unknown>>(value: T) {
+  return Object.fromEntries(Object.entries(value).filter(([, item]) => item !== undefined)) as T;
 }
 
 export function validationErrors(provider: Provider | undefined) {

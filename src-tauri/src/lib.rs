@@ -93,6 +93,7 @@ pub struct OfficialProvider {
     pub provider_id: String,
     pub auth_mode: AuthMode,
     pub api_key: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub advanced: Option<ProviderAdvancedConfig>,
     pub models: Vec<ModelConfig>,
     pub default_model_id: String,
@@ -106,8 +107,11 @@ pub struct CustomProvider {
     pub base_url: String,
     pub api: String,
     pub api_key: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub headers: Option<Vec<HeaderEntry>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub auth_header: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub compat: Option<CompatConfig>,
     pub models: Vec<ModelConfig>,
     pub default_model_id: String,
@@ -130,20 +134,30 @@ pub struct HeaderEntry {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CostConfig {
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub input: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub output: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub cache_read: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub cache_write: Option<f64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProviderAdvancedConfig {
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub base_url: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub api: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub api_key: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub headers: Option<Vec<HeaderEntry>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub auth_header: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub compat: Option<CompatConfig>,
 }
 
@@ -151,17 +165,29 @@ pub struct ProviderAdvancedConfig {
 #[serde(rename_all = "camelCase")]
 pub struct ModelConfig {
     pub id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub source: Option<ModelSource>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub override_built_in: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub api: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub reasoning: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub input: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub context_window: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub max_tokens: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub cost: Option<CostConfig>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub headers: Option<Vec<HeaderEntry>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub compat: Option<CompatConfig>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub thinking_level_map: Option<HashMap<String, Option<String>>>,
 }
 
@@ -362,6 +388,13 @@ impl AppError {
         self.written_files = Some(written_files.to_vec());
         self
     }
+
+    fn message_with_details(&self) -> String {
+        match &self.details {
+            Some(details) if !details.is_empty() => format!("{} ({details})", self.message),
+            _ => self.message.clone(),
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -468,7 +501,17 @@ async fn test_provider(input: TestProviderInput) -> AppResult<TestProviderResult
     })?;
     let config = normalize_app_config(input.config);
     apply_provider(&config, &input.provider_entry_id, &paths)?;
-    run_pi_ping(&paths.home).await
+    let provider = config
+        .providers
+        .iter()
+        .find(|provider| self::provider_entry_id(provider) == input.provider_entry_id)
+        .ok_or_else(|| validation_error("找不到要测试的供应商"))?;
+    run_pi_ping(
+        &paths.home,
+        &provider_id(provider),
+        default_model_id(provider),
+    )
+    .await
 }
 
 #[tauri::command]
@@ -484,42 +527,130 @@ async fn fetch_custom_provider_models(
         ));
     }
 
-    let url = format!("{base_url}/models");
-    let value: Value = reqwest::Client::new()
-        .get(&url)
+    let client = reqwest::Client::new();
+    let urls = model_fetch_urls(&base_url);
+    let mut errors = Vec::new();
+    for url in &urls {
+        match fetch_models_from_url(&client, url, &api_key).await {
+            Ok(models) => return Ok(FetchCustomProviderModelsResult { models }),
+            Err(err) => errors.push(format!("{url}: {}", err.message_with_details())),
+        }
+    }
+
+    Err(
+        AppError::new("MODEL_FETCH_FAILED", "拉取模型失败").with_details(format!(
+            "已尝试: {}\n{}",
+            urls.join(", "),
+            errors.join("\n")
+        )),
+    )
+}
+
+fn model_fetch_urls(base_url: &str) -> Vec<String> {
+    let mut urls = vec![format!("{base_url}/models")];
+    if !base_url
+        .rsplit('/')
+        .next()
+        .is_some_and(|segment| segment.eq_ignore_ascii_case("v1"))
+    {
+        urls.push(format!("{base_url}/v1/models"));
+    }
+    urls
+}
+
+async fn fetch_models_from_url(
+    client: &reqwest::Client,
+    url: &str,
+    api_key: &str,
+) -> AppResult<Vec<String>> {
+    let response = client
+        .get(url)
         .bearer_auth(api_key)
         .send()
         .await
         .map_err(|err| {
-            AppError::new("MODEL_FETCH_FAILED", "请求 /models 失败").with_details(err.to_string())
+            AppError::new("MODEL_FETCH_FAILED", "请求模型列表失败").with_details(err.to_string())
         })?
         .error_for_status()
         .map_err(|err| {
-            AppError::new("MODEL_FETCH_FAILED", "/models 返回错误状态")
-                .with_details(err.to_string())
-        })?
-        .json()
-        .await
-        .map_err(|err| {
-            AppError::new("MODEL_FETCH_FAILED", "/models 响应不是可解析 JSON")
+            AppError::new("MODEL_FETCH_FAILED", "模型列表返回错误状态")
                 .with_details(err.to_string())
         })?;
 
-    let mut models = value
+    let content_type = response
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or("")
+        .to_string();
+    let value: Value = response.json().await.map_err(|err| {
+        AppError::new("MODEL_FETCH_FAILED", "模型列表响应不是可解析 JSON")
+            .with_details(format!("{err}; content-type: {content_type}"))
+    })?;
+
+    let mut models = parse_openai_model_list(&value)?;
+    models.sort();
+    models.dedup();
+    Ok(models)
+}
+
+fn parse_openai_model_list(value: &Value) -> AppResult<Vec<String>> {
+    let models = value
         .get("data")
         .and_then(Value::as_array)
-        .ok_or_else(|| AppError::new("MODEL_FETCH_FAILED", "/models 响应缺少 data 数组"))?
+        .ok_or_else(|| AppError::new("MODEL_FETCH_FAILED", "模型列表响应缺少 data 数组"))?
         .iter()
         .filter_map(|item| item.get("id").and_then(Value::as_str))
         .map(ToString::to_string)
         .collect::<Vec<_>>();
-    models.sort();
-    models.dedup();
-    Ok(FetchCustomProviderModelsResult { models })
+    if models.is_empty() {
+        return Err(AppError::new(
+            "MODEL_FETCH_FAILED",
+            "模型列表响应没有可用模型 ID",
+        ));
+    }
+    Ok(models)
 }
 
 #[tauri::command]
 async fn list_pi_models(input: ListPiModelsInput) -> AppResult<ListPiModelsResult> {
+    match list_pi_models_via_cli(&input.provider_id).await {
+        Ok(models) => return Ok(ListPiModelsResult { models }),
+        Err(cli_err) => list_pi_models_via_registry(input)
+            .await
+            .map_err(|registry_err| {
+                AppError::new("PI_MODEL_REGISTRY_FAILED", "读取 Pi 模型列表失败").with_details(
+                    format!(
+                        "pi --list-models 失败: {}\nregistry fallback 失败: {}",
+                        cli_err.message_with_details(),
+                        registry_err.message_with_details()
+                    ),
+                )
+            }),
+    }
+}
+
+async fn list_pi_models_via_cli(provider_id: &str) -> AppResult<Vec<PiModelInfo>> {
+    let output = Command::new("pi")
+        .arg("--list-models")
+        .arg(provider_id)
+        .arg("--offline")
+        .output()
+        .await
+        .map_err(|err| {
+            AppError::new("PI_COMMAND_NOT_FOUND", "无法启动 pi 读取模型列表")
+                .with_details(err.to_string())
+        })?;
+    if !output.status.success() {
+        return Err(
+            AppError::new("PI_MODEL_LIST_FAILED", "pi --list-models 执行失败")
+                .with_details(String::from_utf8_lossy(&output.stderr).to_string()),
+        );
+    }
+    parse_pi_models_table(&String::from_utf8_lossy(&output.stdout), provider_id)
+}
+
+async fn list_pi_models_via_registry(input: ListPiModelsInput) -> AppResult<ListPiModelsResult> {
     let pi_path = find_pi_command_path().await?;
     let package_index = pi_path
         .parent()
@@ -568,14 +699,35 @@ console.log(JSON.stringify(models));
                 .with_details(err.to_string())
         })?;
     if !output.status.success() {
-        return Err(AppError::new("PI_MODEL_REGISTRY_FAILED", "读取 Pi 模型注册表失败")
-            .with_details(String::from_utf8_lossy(&output.stderr).to_string()));
+        return Err(
+            AppError::new("PI_MODEL_REGISTRY_FAILED", "读取 Pi 模型注册表失败")
+                .with_details(String::from_utf8_lossy(&output.stderr).to_string()),
+        );
     }
     parse_pi_models_json(&String::from_utf8_lossy(&output.stdout))
         .map(|models| ListPiModelsResult { models })
 }
 
 fn validate_app_config(config: &AppConfig) -> AppResult<()> {
+    validate_app_config_provider_ids(config)?;
+
+    for provider in &config.providers {
+        validate_provider(provider)?;
+    }
+
+    if let Some(active_id) = &config.active_provider_id {
+        if !config
+            .providers
+            .iter()
+            .any(|provider| provider_entry_id(provider) == active_id)
+        {
+            return Err(validation_error("activeProviderId 必须匹配现有供应商"));
+        }
+    }
+    Ok(())
+}
+
+fn validate_app_config_provider_ids(config: &AppConfig) -> AppResult<()> {
     if config.schema_version != SCHEMA_VERSION {
         return Err(AppError::new(
             "UNSUPPORTED_SCHEMA_VERSION",
@@ -591,17 +743,6 @@ fn validate_app_config(config: &AppConfig) -> AppResult<()> {
         }
         if !ids.insert(id.to_string()) {
             return Err(validation_error(format!("供应商条目 ID 重复: {id}")));
-        }
-        validate_provider(provider)?;
-    }
-
-    if let Some(active_id) = &config.active_provider_id {
-        if !config
-            .providers
-            .iter()
-            .any(|provider| provider_entry_id(provider) == active_id)
-        {
-            return Err(validation_error("activeProviderId 必须匹配现有供应商"));
         }
     }
     Ok(())
@@ -766,21 +907,13 @@ fn normalize_provider(provider: Provider) -> Provider {
     match provider {
         Provider::Official(mut provider) => {
             provider.api_key = provider.api_key.trim().to_string();
-            provider.models = provider
-                .models
-                .into_iter()
-                .map(normalize_model)
-                .collect();
+            provider.models = provider.models.into_iter().map(normalize_model).collect();
             Provider::Official(provider)
         }
         Provider::Custom(mut provider) => {
             provider.base_url = provider.base_url.trim().to_string();
             provider.api_key = provider.api_key.trim().to_string();
-            provider.models = provider
-                .models
-                .into_iter()
-                .map(normalize_model)
-                .collect();
+            provider.models = provider.models.into_iter().map(normalize_model).collect();
             Provider::Custom(provider)
         }
     }
@@ -820,12 +953,19 @@ fn provider_id(provider: &Provider) -> String {
     }
 }
 
+fn default_model_id(provider: &Provider) -> &str {
+    match provider {
+        Provider::Official(provider) => &provider.default_model_id,
+        Provider::Custom(provider) => &provider.default_model_id,
+    }
+}
+
 fn sanitize_provider_id(value: &str) -> String {
     value.chars().filter(|char| !char.is_whitespace()).collect()
 }
 
 fn apply_provider(config: &AppConfig, provider_entry_id: &str, paths: &Paths) -> AppResult<()> {
-    validate_app_config(config)?;
+    validate_app_config_provider_ids(config)?;
     let provider = config
         .providers
         .iter()
@@ -870,7 +1010,11 @@ fn build_models_json(provider: &Provider) -> Value {
         Provider::Official(provider) => {
             let mut provider_object = Map::new();
             if let Some(advanced) = &provider.advanced {
-                insert_trimmed_string(&mut provider_object, "baseUrl", advanced.base_url.as_deref());
+                insert_trimmed_string(
+                    &mut provider_object,
+                    "baseUrl",
+                    advanced.base_url.as_deref(),
+                );
                 insert_trimmed_string(&mut provider_object, "api", advanced.api.as_deref());
                 insert_trimmed_string(&mut provider_object, "apiKey", advanced.api_key.as_deref());
                 insert_headers(&mut provider_object, advanced.headers.as_deref());
@@ -1010,7 +1154,11 @@ fn model_override_to_value(model: &ModelConfig) -> Option<Value> {
     (!object.is_empty()).then_some(Value::Object(object))
 }
 
-fn insert_model_optional_fields(object: &mut Map<String, Value>, model: &ModelConfig, include_api: bool) {
+fn insert_model_optional_fields(
+    object: &mut Map<String, Value>,
+    model: &ModelConfig,
+    include_api: bool,
+) {
     insert_trimmed_string(object, "name", model.name.as_deref());
     if include_api {
         insert_trimmed_string(object, "api", model.api.as_deref());
@@ -1102,7 +1250,11 @@ fn compat_to_value(compat: &CompatConfig) -> Option<Value> {
         "supportsUsageInStreaming",
         compat.supports_usage_in_streaming,
     );
-    insert_trimmed_string(&mut object, "maxTokensField", compat.max_tokens_field.as_deref());
+    insert_trimmed_string(
+        &mut object,
+        "maxTokensField",
+        compat.max_tokens_field.as_deref(),
+    );
     insert_bool(
         &mut object,
         "requiresToolResultName",
@@ -1123,9 +1275,17 @@ fn compat_to_value(compat: &CompatConfig) -> Option<Value> {
         "requiresReasoningContentOnAssistantMessages",
         compat.requires_reasoning_content_on_assistant_messages,
     );
-    insert_trimmed_string(&mut object, "thinkingFormat", compat.thinking_format.as_deref());
+    insert_trimmed_string(
+        &mut object,
+        "thinkingFormat",
+        compat.thinking_format.as_deref(),
+    );
     insert_bool(&mut object, "zaiToolStream", compat.zai_tool_stream);
-    insert_bool(&mut object, "supportsStrictMode", compat.supports_strict_mode);
+    insert_bool(
+        &mut object,
+        "supportsStrictMode",
+        compat.supports_strict_mode,
+    );
     insert_trimmed_string(
         &mut object,
         "cacheControlFormat",
@@ -1141,7 +1301,11 @@ fn compat_to_value(compat: &CompatConfig) -> Option<Value> {
         "supportsLongCacheRetention",
         compat.supports_long_cache_retention,
     );
-    insert_bool(&mut object, "sendSessionIdHeader", compat.send_session_id_header);
+    insert_bool(
+        &mut object,
+        "sendSessionIdHeader",
+        compat.send_session_id_header,
+    );
     insert_bool(
         &mut object,
         "supportsEagerToolInputStreaming",
@@ -1162,7 +1326,11 @@ fn compat_to_value(compat: &CompatConfig) -> Option<Value> {
         "forceAdaptiveThinking",
         compat.force_adaptive_thinking,
     );
-    insert_bool(&mut object, "allowEmptySignature", compat.allow_empty_signature);
+    insert_bool(
+        &mut object,
+        "allowEmptySignature",
+        compat.allow_empty_signature,
+    );
     if let Some(routing) = &compat.open_router_routing {
         if let Some(value) = open_router_routing_to_value(routing) {
             object.insert("openRouterRouting".to_string(), value);
@@ -1179,8 +1347,16 @@ fn compat_to_value(compat: &CompatConfig) -> Option<Value> {
 fn open_router_routing_to_value(routing: &OpenRouterRouting) -> Option<Value> {
     let mut object = Map::new();
     insert_bool(&mut object, "allow_fallbacks", routing.allow_fallbacks);
-    insert_bool(&mut object, "require_parameters", routing.require_parameters);
-    insert_trimmed_string(&mut object, "data_collection", routing.data_collection.as_deref());
+    insert_bool(
+        &mut object,
+        "require_parameters",
+        routing.require_parameters,
+    );
+    insert_trimmed_string(
+        &mut object,
+        "data_collection",
+        routing.data_collection.as_deref(),
+    );
     insert_bool(&mut object, "zdr", routing.zdr);
     insert_bool(
         &mut object,
@@ -1190,7 +1366,11 @@ fn open_router_routing_to_value(routing: &OpenRouterRouting) -> Option<Value> {
     insert_string_array(&mut object, "order", routing.order.as_deref());
     insert_string_array(&mut object, "only", routing.only.as_deref());
     insert_string_array(&mut object, "ignore", routing.ignore.as_deref());
-    insert_string_array(&mut object, "quantizations", routing.quantizations.as_deref());
+    insert_string_array(
+        &mut object,
+        "quantizations",
+        routing.quantizations.as_deref(),
+    );
     insert_open_router_sort(&mut object, routing);
     insert_open_router_max_price(&mut object, routing);
     insert_percentile_object(
@@ -1437,8 +1617,17 @@ fn atomic_write_json<T: Serialize>(target: &Path, value: &T) -> AppResult<()> {
     Ok(())
 }
 
-async fn run_pi_ping(home: &Path) -> AppResult<TestProviderResult> {
+async fn run_pi_ping(
+    home: &Path,
+    provider_id: &str,
+    model_id: &str,
+) -> AppResult<TestProviderResult> {
     let mut child = Command::new("pi")
+        .arg("--provider")
+        .arg(provider_id)
+        .arg("--model")
+        .arg(model_id)
+        .arg("--no-session")
         .arg("-p")
         .arg("ping")
         .current_dir(home)
@@ -1505,11 +1694,10 @@ async fn find_pi_command_path() -> AppResult<PathBuf> {
             AppError::new("PI_COMMAND_NOT_FOUND", "无法定位 pi 命令").with_details(err.to_string())
         })?;
     if !output.status.success() {
-        return Err(AppError::new(
-            "PI_COMMAND_NOT_FOUND",
-            "当前 GUI 环境无法找到 pi 命令",
-        )
-        .with_details(String::from_utf8_lossy(&output.stderr).to_string()));
+        return Err(
+            AppError::new("PI_COMMAND_NOT_FOUND", "当前 GUI 环境无法找到 pi 命令")
+                .with_details(String::from_utf8_lossy(&output.stderr).to_string()),
+        );
     }
     let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
     if path.is_empty() {
@@ -1526,8 +1714,7 @@ async fn find_pi_command_path() -> AppResult<PathBuf> {
 
 fn parse_pi_models_json(output: &str) -> AppResult<Vec<PiModelInfo>> {
     let registry_models: Vec<PiRegistryModel> = serde_json::from_str(output).map_err(|err| {
-        AppError::new("PI_MODELS_PARSE_FAILED", "Pi 模型输出无法解析")
-            .with_details(err.to_string())
+        AppError::new("PI_MODELS_PARSE_FAILED", "Pi 模型输出无法解析").with_details(err.to_string())
     })?;
     Ok(registry_models
         .into_iter()
@@ -1540,6 +1727,51 @@ fn parse_pi_models_json(output: &str) -> AppResult<Vec<PiModelInfo>> {
             images: model.input.iter().any(|input| input == "image"),
         })
         .collect())
+}
+
+fn parse_pi_models_table(output: &str, provider_id: &str) -> AppResult<Vec<PiModelInfo>> {
+    let mut lines = output.lines().filter(|line| !line.trim().is_empty());
+    let header = lines
+        .next()
+        .ok_or_else(|| AppError::new("PI_MODELS_PARSE_FAILED", "Pi 模型列表输出为空"))?;
+    if !header.contains("provider")
+        || !header.contains("model")
+        || !header.contains("context")
+        || !header.contains("max-out")
+    {
+        return Err(
+            AppError::new("PI_MODELS_PARSE_FAILED", "Pi 模型列表表头无法识别")
+                .with_details(header.to_string()),
+        );
+    }
+
+    let mut models = Vec::new();
+    for line in lines {
+        let columns = line.split_whitespace().collect::<Vec<_>>();
+        if columns.len() < 6 || columns[0] != provider_id {
+            continue;
+        }
+        models.push(PiModelInfo {
+            provider: columns[0].to_string(),
+            id: columns[1].to_string(),
+            context: columns[2].to_string(),
+            max_out: columns[3].to_string(),
+            thinking: parse_yes_no(columns[4])?,
+            images: parse_yes_no(columns[5])?,
+        });
+    }
+    Ok(models)
+}
+
+fn parse_yes_no(value: &str) -> AppResult<bool> {
+    match value {
+        "yes" => Ok(true),
+        "no" => Ok(false),
+        _ => Err(AppError::new(
+            "PI_MODELS_PARSE_FAILED",
+            format!("无法解析布尔列: {value}"),
+        )),
+    }
 }
 
 fn format_token_count(count: u64) -> String {
@@ -1656,6 +1888,21 @@ mod tests {
                 ])),
             }],
             default_model_id: "deepseek chat".to_string(),
+        })
+    }
+
+    fn incomplete_custom_provider() -> Provider {
+        Provider::Custom(CustomProvider {
+            id: "provider_incomplete".to_string(),
+            name: "Incomplete".to_string(),
+            base_url: "".to_string(),
+            api: "".to_string(),
+            api_key: "".to_string(),
+            headers: None,
+            auth_header: None,
+            compat: None,
+            models: Vec::new(),
+            default_model_id: "".to_string(),
         })
     }
 
@@ -1800,8 +2047,14 @@ mod tests {
         assert_eq!(provider["models"][0]["contextWindow"], 128000);
         assert_eq!(provider["models"][0]["maxTokens"], 32000);
         assert_eq!(provider["models"][0]["cost"]["cacheRead"], 0.01);
-        assert_eq!(provider["models"][0]["headers"]["x-model-key"], "$MODEL_KEY");
-        assert_eq!(provider["models"][0]["compat"]["supportsDeveloperRole"], false);
+        assert_eq!(
+            provider["models"][0]["headers"]["x-model-key"],
+            "$MODEL_KEY"
+        );
+        assert_eq!(
+            provider["models"][0]["compat"]["supportsDeveloperRole"],
+            false
+        );
         assert_eq!(
             provider["models"][0]["thinkingLevelMap"]["minimal"],
             Value::Null
@@ -1835,6 +2088,27 @@ mod tests {
     }
 
     #[test]
+    fn open_router_routing_accepts_camel_case_ipc_and_writes_snake_case_pi_config() {
+        let routing: OpenRouterRouting = serde_json::from_value(json!({
+            "allowFallbacks": true,
+            "requireParameters": false,
+            "dataCollection": "deny",
+            "zdr": true,
+            "enforceDistillableText": true,
+            "sortBy": "price"
+        }))
+        .unwrap();
+
+        let value = open_router_routing_to_value(&routing).unwrap();
+        assert_eq!(value["allow_fallbacks"], true);
+        assert_eq!(value["require_parameters"], false);
+        assert_eq!(value["data_collection"], "deny");
+        assert_eq!(value["zdr"], true);
+        assert_eq!(value["enforce_distillable_text"], true);
+        assert_eq!(value["sort"], "price");
+    }
+
+    #[test]
     fn parses_pi_models_json() {
         let output = r#"
 [
@@ -1864,6 +2138,68 @@ mod tests {
                     images: true,
                 },
             ]
+        );
+    }
+
+    #[test]
+    fn parses_pi_models_table_for_provider() {
+        let output = r#"
+provider  model                  context  max-out  thinking  images
+BM        gpt-5.4                128K     16.4K    no        no
+openai    gpt-5.5                272K     128K     yes       yes
+openai    o3-mini                200K     100K     yes       no
+"#;
+
+        assert_eq!(
+            parse_pi_models_table(output, "openai").unwrap(),
+            vec![
+                PiModelInfo {
+                    provider: "openai".to_string(),
+                    id: "gpt-5.5".to_string(),
+                    context: "272K".to_string(),
+                    max_out: "128K".to_string(),
+                    thinking: true,
+                    images: true,
+                },
+                PiModelInfo {
+                    provider: "openai".to_string(),
+                    id: "o3-mini".to_string(),
+                    context: "200K".to_string(),
+                    max_out: "100K".to_string(),
+                    thinking: true,
+                    images: false,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn model_fetch_urls_falls_back_to_v1_once() {
+        assert_eq!(
+            model_fetch_urls("http://localhost:8080"),
+            vec![
+                "http://localhost:8080/models".to_string(),
+                "http://localhost:8080/v1/models".to_string()
+            ]
+        );
+        assert_eq!(
+            model_fetch_urls("http://localhost:8080/v1"),
+            vec!["http://localhost:8080/v1/models".to_string()]
+        );
+    }
+
+    #[test]
+    fn parses_openai_model_list() {
+        let value = json!({
+            "object": "list",
+            "data": [
+                { "id": "gpt-5.4", "object": "model" },
+                { "id": "gpt-5.5", "type": "model" }
+            ]
+        });
+        assert_eq!(
+            parse_openai_model_list(&value).unwrap(),
+            vec!["gpt-5.4".to_string(), "gpt-5.5".to_string()]
         );
     }
 
@@ -1937,5 +2273,36 @@ mod tests {
         assert_eq!(settings["defaultProvider"], "Relay");
         assert_eq!(settings["defaultModel"], "deepseek chat");
         assert_eq!(settings["enabledModels"], json!(["deepseek chat"]));
+    }
+
+    #[test]
+    fn apply_provider_ignores_unselected_incomplete_provider() {
+        let dir = tempfile::tempdir().unwrap();
+        let pi_agent_dir = dir.path().join(".pi").join("agent");
+        fs::create_dir_all(&pi_agent_dir).unwrap();
+        let paths = Paths {
+            app_config_dir: dir.path().join("PiSwitch"),
+            app_config_file: dir.path().join("PiSwitch").join("config.json"),
+            pi_agent_dir: pi_agent_dir.clone(),
+            pi_models_file: pi_agent_dir.join("models.json"),
+            pi_auth_file: pi_agent_dir.join("auth.json"),
+            pi_settings_file: pi_agent_dir.join("settings.json"),
+            home: dir.path().to_path_buf(),
+        };
+        let config = AppConfig {
+            schema_version: SCHEMA_VERSION,
+            language: None,
+            theme: ThemeMode::System,
+            active_provider_id: Some("provider_custom".to_string()),
+            providers: vec![custom_provider(), incomplete_custom_provider()],
+        };
+
+        apply_provider(&config, "provider_custom", &paths).unwrap();
+        assert!(validate_app_config(&config).is_err());
+
+        let settings: Value =
+            serde_json::from_str(&fs::read_to_string(paths.pi_settings_file).unwrap()).unwrap();
+        assert_eq!(settings["defaultProvider"], "Relay");
+        assert_eq!(settings["defaultModel"], "deepseek chat");
     }
 }

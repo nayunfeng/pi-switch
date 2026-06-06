@@ -1176,12 +1176,12 @@ function RoutingForm({ value, onChange, t }: { value: CompatConfig; onChange: (v
       <div className="grid gap-4 pt-3">
         <SectionTitle>OpenRouter</SectionTitle>
         <div className="editor-grid grid grid-cols-3 gap-3">
-          <TriStateBool label={t("routeFallbacks")} field="allow_fallbacks" help={t("routeFallbacksHelp")} value={openRouterRouting.allow_fallbacks} onChange={(allow_fallbacks) => onChange({ ...value, openRouterRouting: { ...openRouterRouting, allow_fallbacks } })} />
-          <TriStateBool label={t("routeRequireParameters")} field="require_parameters" help={t("routeRequireParametersHelp")} value={openRouterRouting.require_parameters} onChange={(require_parameters) => onChange({ ...value, openRouterRouting: { ...openRouterRouting, require_parameters } })} />
+          <TriStateBool label={t("routeFallbacks")} field="allow_fallbacks" help={t("routeFallbacksHelp")} value={openRouterRouting.allowFallbacks} onChange={(allowFallbacks) => onChange({ ...value, openRouterRouting: { ...openRouterRouting, allowFallbacks } })} />
+          <TriStateBool label={t("routeRequireParameters")} field="require_parameters" help={t("routeRequireParametersHelp")} value={openRouterRouting.requireParameters} onChange={(requireParameters) => onChange({ ...value, openRouterRouting: { ...openRouterRouting, requireParameters } })} />
           <TriStateBool label={t("routeZdr")} field="zdr" help={t("routeZdrHelp")} value={openRouterRouting.zdr} onChange={(zdr) => onChange({ ...value, openRouterRouting: { ...openRouterRouting, zdr } })} />
-          <TriStateBool label={t("routeDistillable")} field="enforce_distillable_text" help={t("routeDistillableHelp")} value={openRouterRouting.enforce_distillable_text} onChange={(enforce_distillable_text) => onChange({ ...value, openRouterRouting: { ...openRouterRouting, enforce_distillable_text } })} />
+          <TriStateBool label={t("routeDistillable")} field="enforce_distillable_text" help={t("routeDistillableHelp")} value={openRouterRouting.enforceDistillableText} onChange={(enforceDistillableText) => onChange({ ...value, openRouterRouting: { ...openRouterRouting, enforceDistillableText } })} />
           <LabeledField label={t("routeDataCollection")} field="data_collection" help={t("routeDataCollectionHelp")}>
-            <select value={openRouterRouting.data_collection ?? ""} onChange={(event) => onChange({ ...value, openRouterRouting: { ...openRouterRouting, data_collection: event.target.value as "allow" | "deny" | "" } })}>
+            <select value={openRouterRouting.dataCollection ?? ""} onChange={(event) => onChange({ ...value, openRouterRouting: { ...openRouterRouting, dataCollection: event.target.value as "allow" | "deny" | "" } })}>
               <option value="">{t("defaultValue")}</option>
               <option value="allow">allow</option>
               <option value="deny">deny</option>
