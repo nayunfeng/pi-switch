@@ -1040,6 +1040,7 @@ function AccountsPanel({
   t: ReturnType<typeof createTranslator>;
 }) {
   const oauthSupported = supportsOAuthLogin(providerId);
+  const codexSummary = codexAccountSummary(accounts);
   return (
     <div className="grid max-w-[1040px] gap-4">
       <div className="flex items-center justify-between gap-3">
@@ -1078,6 +1079,7 @@ function AccountsPanel({
           </button>
         </div>
         {oauthState.providerId === providerId && oauthState.events.length > 0 ? <OAuthEventList events={oauthState.events} t={t} /> : null}
+        <CodexAccountReadiness summary={codexSummary} t={t} />
       </section>
 
       <section className="grid gap-3">
@@ -1145,6 +1147,32 @@ function AccountsPanel({
           </div>
         </section>
       ) : null}
+    </div>
+  );
+}
+
+type CodexAccountSummary = {
+  oauthCount: number;
+  appliedCount: number;
+  distinctIdentityCount: number;
+  activeLabel: string;
+  ready: boolean;
+};
+
+function CodexAccountReadiness({ summary, t }: { summary: CodexAccountSummary; t: ReturnType<typeof createTranslator> }) {
+  return (
+    <div className="grid gap-2 rounded-md border p-3 text-sm" style={{ borderColor: "var(--border)", background: "var(--bg)" }}>
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <strong>{t("codexAccountReadiness")}</strong>
+        <span className="model-meta">{summary.ready ? t("ready") : t("notReady")}</span>
+      </div>
+      <div className="flex flex-wrap gap-2">
+        <span className="model-meta">{t("codexOAuthAccounts")}: {summary.oauthCount}</span>
+        <span className="model-meta">{t("codexAppliedAccounts")}: {summary.appliedCount}</span>
+        <span className="model-meta">{t("codexDistinctIdentities")}: {summary.distinctIdentityCount}</span>
+        <span className="model-meta">{t("codexActiveAccount")}: {summary.activeLabel || t("none")}</span>
+      </div>
+      {!summary.ready ? <div className="muted">{t("codexReadinessHelp")}</div> : null}
     </div>
   );
 }
@@ -1810,6 +1838,44 @@ function accountIdentityText(account: AuthAccount) {
     .slice(0, 3)
     .map((item) => `${accountIdentityLabel(item.field)}: ${item.value}`)
     .join(" / ");
+}
+
+function codexAccountSummary(accounts: AuthAccount[]) {
+  const oauthAccounts = accounts.filter((account) => account.providerId === "openai-codex" && account.kind === "oauth");
+  const identityKeys = new Set(oauthAccounts.map(accountIdentityKey).filter(Boolean));
+  const active = oauthAccounts.find((account) => account.activeInPi);
+  const appliedCount = oauthAccounts.filter((account) => account.lastAppliedAt).length;
+  return {
+    oauthCount: oauthAccounts.length,
+    appliedCount,
+    distinctIdentityCount: identityKeys.size,
+    activeLabel: active?.label ?? "",
+    ready: oauthAccounts.length >= 2 && appliedCount >= 2 && identityKeys.size >= 2 && Boolean(active),
+  };
+}
+
+function accountIdentityKey(account: AuthAccount) {
+  const identities = account.identity ?? [];
+  const priority = [
+    "oauth.chatgptAccountId",
+    "oauth.accountId",
+    "account.id",
+    "accountId",
+    "oauth.chatgptUserId",
+    "oauth.userId",
+    "user.id",
+    "oauth.sub",
+    "sub",
+    "subject",
+    "oauth.email",
+    "user.email",
+    "email",
+  ];
+  for (const field of priority) {
+    const match = identities.find((identity) => identity.field.toLowerCase() === field.toLowerCase());
+    if (match) return `${field.toLowerCase()}=${match.value}`;
+  }
+  return "";
 }
 
 function accountIdentityRank(field: string) {
