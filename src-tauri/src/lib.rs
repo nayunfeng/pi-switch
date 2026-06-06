@@ -771,6 +771,27 @@ fn normalize_account_label(
     format!("{provider_id} {suffix}")
 }
 
+fn unique_account_label(store: &AccountsStore, base_label: &str) -> String {
+    let base = base_label.trim();
+    if base.is_empty() {
+        return "Account".to_string();
+    }
+    if !store.accounts.iter().any(|account| account.label == base) {
+        return base.to_string();
+    }
+    for index in 2.. {
+        let candidate = format!("{base} {index}");
+        if !store
+            .accounts
+            .iter()
+            .any(|account| account.label == candidate)
+        {
+            return candidate;
+        }
+    }
+    unreachable!("infinite iterator should always produce a unique label")
+}
+
 fn load_accounts_store_from_path(path: &Path) -> AppResult<AccountsStore> {
     if !path.exists() {
         return Ok(default_accounts_store());
@@ -1043,7 +1064,7 @@ fn upsert_auth_account(
     let account = AuthAccount {
         id: create_account_id(),
         provider_id,
-        label,
+        label: unique_account_label(store, &label),
         kind,
         credential,
         created_at: now.clone(),
@@ -1070,7 +1091,7 @@ fn duplicate_auth_account_in_store(
     let account = AuthAccount {
         id: create_account_id(),
         provider_id: source.provider_id,
-        label: format!("{} Copy", source.label),
+        label: unique_account_label(store, &format!("{} Copy", source.label)),
         kind: source.kind,
         credential: source.credential,
         created_at: now.clone(),
@@ -3196,6 +3217,60 @@ mod tests {
         assert!(duplicate.last_applied_at.is_none());
         assert!(!duplicate.active_in_pi);
         assert_eq!(store.accounts.len(), 2);
+    }
+
+    #[test]
+    fn default_account_labels_are_unique_for_same_provider_accounts() {
+        let mut store = AccountsStore {
+            version: ACCOUNTS_VERSION,
+            accounts: vec![],
+        };
+        let label = normalize_account_label(None, "openai-codex", AuthAccountKind::OAuth);
+
+        let first = upsert_auth_account(
+            &mut store,
+            "openai-codex".to_string(),
+            label.clone(),
+            AuthAccountKind::OAuth,
+            json!({ "type": "oauth", "accessToken": "token-a" }),
+        )
+        .unwrap();
+        let second = upsert_auth_account(
+            &mut store,
+            "openai-codex".to_string(),
+            label.clone(),
+            AuthAccountKind::OAuth,
+            json!({ "type": "oauth", "accessToken": "token-b" }),
+        )
+        .unwrap();
+        let third = upsert_auth_account(
+            &mut store,
+            "openai-codex".to_string(),
+            label,
+            AuthAccountKind::OAuth,
+            json!({ "type": "oauth", "accessToken": "token-c" }),
+        )
+        .unwrap();
+
+        assert_eq!(first.label, "openai-codex OAuth");
+        assert_eq!(second.label, "openai-codex OAuth 2");
+        assert_eq!(third.label, "openai-codex OAuth 3");
+    }
+
+    #[test]
+    fn duplicate_account_labels_are_unique() {
+        let mut first = test_account("codex_a", "openai-codex", "token-a");
+        first.label = "Codex Work".to_string();
+        let mut existing_copy = test_account("codex_b", "openai-codex", "token-b");
+        existing_copy.label = "Codex Work Copy".to_string();
+        let mut store = AccountsStore {
+            version: ACCOUNTS_VERSION,
+            accounts: vec![first, existing_copy],
+        };
+
+        let duplicate = duplicate_auth_account_in_store(&mut store, "codex_a").unwrap();
+
+        assert_eq!(duplicate.label, "Codex Work Copy 2");
     }
 
     #[test]
