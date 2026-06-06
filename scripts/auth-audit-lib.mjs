@@ -140,6 +140,12 @@ export function matchingAccount(accounts, providerId, currentCredential) {
   if (exact) return { account: exact, match: "exact" };
 
   if (!isOAuthCredential(currentCredential)) return undefined;
+  const currentIdentityKey = oauthIdentityKey(currentCredential);
+  const identity = currentIdentityKey
+    ? candidates.find((account) => oauthIdentityKey(account.credential) === currentIdentityKey)
+    : undefined;
+  if (identity) return { account: identity, match: "oauthIdentity" };
+
   const latestApplied = candidates
     .filter((account) => isOAuthCredential(account.credential) && account.lastAppliedAt)
     .sort((left, right) => String(right.lastAppliedAt).localeCompare(String(left.lastAppliedAt)))[0];

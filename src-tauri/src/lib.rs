@@ -1151,6 +1151,13 @@ fn matching_current_pi_auth_account_index(
             && Some(account.id.as_str()) != exclude_account_id
             && account.credential == *current_credential
     });
+    let identity_index = oauth_identity_key(current_credential).and_then(|identity_key| {
+        store.accounts.iter().position(|account| {
+            account.provider_id == replacing_provider_id
+                && Some(account.id.as_str()) != exclude_account_id
+                && oauth_identity_key(&account.credential).as_deref() == Some(identity_key.as_str())
+        })
+    });
     let latest_applied_index = store
         .accounts
         .iter()
@@ -1165,7 +1172,7 @@ fn matching_current_pi_auth_account_index(
         .max_by(|(_, left), (_, right)| left.last_applied_at.cmp(&right.last_applied_at))
         .map(|(index, _)| index);
 
-    exact_index.or(latest_applied_index)
+    exact_index.or(identity_index).or(latest_applied_index)
 }
 
 fn account_matches_current_pi_auth(
@@ -3971,6 +3978,72 @@ mod tests {
 
         assert!(!store.accounts[0].active_in_pi);
         assert!(store.accounts[1].active_in_pi);
+    }
+
+    #[test]
+    fn active_account_status_prefers_oauth_identity_over_latest_applied() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("auth.json");
+        let token_a_refreshed = test_jwt_token(json!({
+            "https://api.openai.com/auth": {
+                "chatgpt_account_id": "chatgpt-account-a"
+            }
+        }));
+        fs::write(
+            &path,
+            serde_json::to_string(&json!({
+                "openai-codex": {
+                    "type": "oauth",
+                    "tokens": {
+                        "id_token": token_a_refreshed
+                    },
+                    "refreshToken": "refresh-a-new"
+                }
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let mut account_a = test_account("codex_a", "openai-codex", "token-a");
+        account_a.last_applied_at = Some("100".to_string());
+        account_a.credential = json!({
+            "type": "oauth",
+            "tokens": {
+                "id_token": test_jwt_token(json!({
+                    "https://api.openai.com/auth": {
+                        "chatgpt_account_id": "chatgpt-account-a"
+                    }
+                }))
+            },
+            "refreshToken": "refresh-a-old"
+        });
+        let mut account_b = test_account("codex_b", "openai-codex", "token-b");
+        account_b.last_applied_at = Some("200".to_string());
+        account_b.credential = json!({
+            "type": "oauth",
+            "tokens": {
+                "id_token": test_jwt_token(json!({
+                    "https://api.openai.com/auth": {
+                        "chatgpt_account_id": "chatgpt-account-b"
+                    }
+                }))
+            },
+            "refreshToken": "refresh-b"
+        });
+        let mut store = AccountsStore {
+            version: ACCOUNTS_VERSION,
+            accounts: vec![account_a, account_b],
+        };
+
+        let changed = annotate_active_accounts(&mut store, &path);
+
+        assert!(changed);
+        assert!(store.accounts[0].active_in_pi);
+        assert!(!store.accounts[1].active_in_pi);
+        assert_eq!(
+            store.accounts[0].credential["refreshToken"],
+            "refresh-a-new"
+        );
+        assert_eq!(store.accounts[1].credential["refreshToken"], "refresh-b");
     }
 
     #[test]
