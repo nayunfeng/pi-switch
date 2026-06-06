@@ -1805,9 +1805,33 @@ function providerLabel(provider: Provider) {
 
 function accountIdentityText(account: AuthAccount) {
   return (account.identity ?? [])
-    .slice(0, 2)
-    .map((item) => `${item.field}: ${item.value}`)
+    .slice()
+    .sort((left, right) => accountIdentityRank(left.field) - accountIdentityRank(right.field))
+    .slice(0, 3)
+    .map((item) => `${accountIdentityLabel(item.field)}: ${item.value}`)
     .join(" / ");
+}
+
+function accountIdentityRank(field: string) {
+  const normalized = field.toLowerCase();
+  if (normalized.includes("email") || normalized.includes("mail")) return 0;
+  if (normalized.includes("chatgptaccountid")) return 1;
+  if (normalized.endsWith("account.id") || normalized.includes("accountid")) return 2;
+  if (normalized.includes("chatgptuserid")) return 3;
+  if (normalized.endsWith(".id") || normalized === "id") return 4;
+  if (normalized.endsWith(".sub") || normalized === "sub" || normalized.includes("subject")) return 5;
+  if (normalized.includes("authprovider")) return 6;
+  return 20;
+}
+
+function accountIdentityLabel(field: string) {
+  const normalized = field.toLowerCase();
+  if (normalized.includes("email") || normalized.includes("mail")) return "Email";
+  if (normalized.includes("chatgptaccountid") || normalized.endsWith("account.id") || normalized.includes("accountid")) return "Account";
+  if (normalized.includes("chatgptuserid") || normalized.endsWith(".id") || normalized === "id") return "User";
+  if (normalized.endsWith(".sub") || normalized === "sub" || normalized.includes("subject")) return "Subject";
+  if (normalized.includes("authprovider")) return "Login";
+  return field;
 }
 
 function fieldError(code: string | undefined, t: ReturnType<typeof createTranslator>) {
