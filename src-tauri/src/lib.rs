@@ -890,6 +890,35 @@ fn account_identity(credential: &Value) -> Vec<AuthAccountIdentity> {
     fields
 }
 
+fn oauth_identity_key(credential: &Value) -> Option<String> {
+    if !credential_is_oauth(credential) {
+        return None;
+    }
+    let identities = account_identity(credential);
+    [
+        "oauth.chatgptAccountId",
+        "oauth.accountId",
+        "account.id",
+        "accountId",
+        "oauth.chatgptUserId",
+        "oauth.userId",
+        "user.id",
+        "oauth.sub",
+        "sub",
+        "subject",
+        "oauth.email",
+        "user.email",
+        "email",
+    ]
+    .iter()
+    .find_map(|field| {
+        identities
+            .iter()
+            .find(|identity| identity.field.eq_ignore_ascii_case(field))
+            .map(|identity| format!("{}={}", field.to_ascii_lowercase(), identity.value))
+    })
+}
+
 fn account_to_view(account: &AuthAccount) -> AuthAccountView {
     AuthAccountView {
         id: account.id.clone(),
@@ -1253,6 +1282,21 @@ fn upsert_auth_account(
         account.updated_at = now;
         validate_account_credential(account)?;
         return Ok(account.clone());
+    }
+    if kind == AuthAccountKind::OAuth {
+        if let Some(identity_key) = oauth_identity_key(&credential) {
+            if let Some(account) = store.accounts.iter_mut().find(|account| {
+                account.provider_id == provider_id
+                    && account.kind == AuthAccountKind::OAuth
+                    && oauth_identity_key(&account.credential).as_deref()
+                        == Some(identity_key.as_str())
+            }) {
+                account.credential = credential;
+                account.updated_at = now;
+                validate_account_credential(account)?;
+                return Ok(account.clone());
+            }
+        }
     }
     let account = AuthAccount {
         id: create_account_id(),
@@ -3382,6 +3426,13 @@ mod tests {
         }
     }
 
+    fn test_jwt_token(payload: Value) -> String {
+        format!(
+            "header.{}.signature",
+            URL_SAFE_NO_PAD.encode(payload.to_string())
+        )
+    }
+
     #[test]
     fn generated_account_ids_are_unique_under_burst_creation() {
         let mut ids = HashSet::new();
@@ -3475,6 +3526,55 @@ mod tests {
     }
 
     #[test]
+    fn duplicate_oauth_identity_updates_existing_account() {
+        let token_a = test_jwt_token(json!({
+            "email": "codex@example.test",
+            "https://api.openai.com/auth": {
+                "chatgpt_account_id": "chatgpt-account-1"
+            }
+        }));
+        let token_b = test_jwt_token(json!({
+            "email": "codex@example.test",
+            "https://api.openai.com/auth": {
+                "chatgpt_account_id": "chatgpt-account-1"
+            }
+        }));
+        let mut existing = test_account("codex_a", "openai-codex", "token-a");
+        existing.label = "Codex A".to_string();
+        existing.credential = json!({
+            "type": "oauth",
+            "tokens": {
+                "id_token": token_a
+            },
+            "refreshToken": "refresh-a"
+        });
+        let mut store = AccountsStore {
+            version: ACCOUNTS_VERSION,
+            accounts: vec![existing],
+        };
+
+        let account = upsert_auth_account(
+            &mut store,
+            "openai-codex".to_string(),
+            "openai-codex OAuth".to_string(),
+            AuthAccountKind::OAuth,
+            json!({
+                "type": "oauth",
+                "tokens": {
+                    "id_token": token_b
+                },
+                "refreshToken": "refresh-b"
+            }),
+        )
+        .unwrap();
+
+        assert_eq!(account.id, "codex_a");
+        assert_eq!(account.label, "Codex A");
+        assert_eq!(account.credential["refreshToken"], "refresh-b");
+        assert_eq!(store.accounts.len(), 1);
+    }
+
+    #[test]
     fn duplicate_account_labels_are_unique() {
         let mut first = test_account("codex_a", "openai-codex", "token-a");
         first.label = "Codex Work".to_string();
@@ -3539,10 +3639,7 @@ mod tests {
                 "chatgpt_user_id": "chatgpt-user-1"
             }
         });
-        let token = format!(
-            "header.{}.signature",
-            URL_SAFE_NO_PAD.encode(payload.to_string())
-        );
+        let token = test_jwt_token(payload);
         let mut account = test_account("codex_a", "openai-codex", "token-a");
         account.credential = json!({
             "type": "oauth",

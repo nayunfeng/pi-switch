@@ -82,6 +82,32 @@ function collectJwtIdentityFields(value, rows, depth = 0) {
   }
 }
 
+function oauthIdentityKey(credential) {
+  if (!isOAuthCredential(credential)) return undefined;
+  const identity = collectIdentityFields(credential).slice(0, 8);
+  collectJwtIdentityFields(credential, identity);
+  const priority = [
+    "oauth.chatgptAccountId",
+    "oauth.accountId",
+    "account.id",
+    "accountId",
+    "oauth.chatgptUserId",
+    "oauth.userId",
+    "user.id",
+    "oauth.sub",
+    "sub",
+    "subject",
+    "oauth.email",
+    "user.email",
+    "email",
+  ];
+  for (const field of priority) {
+    const match = identity.find((item) => item.field.toLowerCase() === field.toLowerCase());
+    if (match) return `${field.toLowerCase()}=${match.value}`;
+  }
+  return undefined;
+}
+
 export function readJson(file) {
   if (!fs.existsSync(file)) return undefined;
   return JSON.parse(fs.readFileSync(file, "utf8"));
@@ -95,6 +121,7 @@ export function credentialSummary(credential) {
     type: credential.type,
     fields: Object.keys(credential).filter((key) => !SECRET_KEY_RE.test(key)),
     identity,
+    identityKey: oauthIdentityKey(credential),
     hasSecret: Object.keys(credential).some((key) => SECRET_KEY_RE.test(key)),
   };
 }
