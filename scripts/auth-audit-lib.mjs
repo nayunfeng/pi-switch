@@ -2,12 +2,39 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
+const SECRET_KEY_RE = /(token|key|secret|refresh|access|authorization)/i;
+const IDENTITY_KEY_RE = /^(email|mail|username|userName|login|account|accountId|organization|org|team|tenant|subject|sub|id)$/i;
+
 export function resolveAuthAuditPaths(home = os.homedir()) {
   return {
     accounts: path.join(home, "PiSwitch", "accounts.json"),
     config: path.join(home, "PiSwitch", "config.json"),
     piAuth: path.join(home, ".pi", "agent", "auth.json"),
   };
+}
+
+function safeString(value) {
+  if (typeof value !== "string" && typeof value !== "number") return undefined;
+  const text = String(value).trim();
+  if (!text || text.length > 160) return undefined;
+  return text;
+}
+
+function collectIdentityFields(value, prefix = "", depth = 0, rows = []) {
+  if (!value || typeof value !== "object" || depth > 3) return rows;
+  for (const [key, item] of Object.entries(value)) {
+    if (SECRET_KEY_RE.test(key)) continue;
+    const field = prefix ? `${prefix}.${key}` : key;
+    const text = safeString(item);
+    if (text && IDENTITY_KEY_RE.test(key)) {
+      rows.push({ field, value: text });
+      continue;
+    }
+    if (item && typeof item === "object" && !Array.isArray(item)) {
+      collectIdentityFields(item, field, depth + 1, rows);
+    }
+  }
+  return rows;
 }
 
 export function readJson(file) {
@@ -17,10 +44,12 @@ export function readJson(file) {
 
 export function credentialSummary(credential) {
   if (!credential || typeof credential !== "object") return undefined;
+  const identity = collectIdentityFields(credential).slice(0, 8);
   return {
     type: credential.type,
-    fields: Object.keys(credential).filter((key) => !/(token|key|secret|refresh|access|authorization)/i.test(key)),
-    hasSecret: Object.keys(credential).some((key) => /(token|key|secret|refresh|access|authorization)/i.test(key)),
+    fields: Object.keys(credential).filter((key) => !SECRET_KEY_RE.test(key)),
+    identity,
+    hasSecret: Object.keys(credential).some((key) => SECRET_KEY_RE.test(key)),
   };
 }
 
