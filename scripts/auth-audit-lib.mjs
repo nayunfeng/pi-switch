@@ -37,6 +37,51 @@ function collectIdentityFields(value, prefix = "", depth = 0, rows = []) {
   return rows;
 }
 
+function pushIdentityField(rows, field, value) {
+  const text = safeString(value);
+  if (!text || rows.length >= 8) return;
+  if (rows.some((item) => item.field === field && item.value === text)) return;
+  rows.push({ field, value: text });
+}
+
+function decodeJwtPayload(token) {
+  if (typeof token !== "string") return undefined;
+  const payload = token.split(".")[1];
+  if (!payload) return undefined;
+  try {
+    return JSON.parse(Buffer.from(payload, "base64url").toString("utf8"));
+  } catch {
+    return undefined;
+  }
+}
+
+function collectJwtPayloadIdentityFields(payload, rows) {
+  if (!payload || typeof payload !== "object") return;
+  pushIdentityField(rows, "oauth.email", payload.email);
+  pushIdentityField(rows, "oauth.sub", payload.sub);
+  pushIdentityField(rows, "oauth.authProvider", payload.auth_provider);
+
+  const auth = payload["https://api.openai.com/auth"];
+  if (!auth || typeof auth !== "object") return;
+  pushIdentityField(rows, "oauth.chatgptAccountId", auth.chatgpt_account_id);
+  pushIdentityField(rows, "oauth.accountId", auth.account_id);
+  pushIdentityField(rows, "oauth.chatgptUserId", auth.chatgpt_user_id);
+  pushIdentityField(rows, "oauth.userId", auth.user_id);
+}
+
+function collectJwtIdentityFields(value, rows, depth = 0) {
+  if (!value || typeof value !== "object" || depth > 4 || rows.length >= 8) return;
+  for (const [key, item] of Object.entries(value)) {
+    if (rows.length >= 8) return;
+    if (SECRET_KEY_RE.test(key) && typeof item === "string") {
+      collectJwtPayloadIdentityFields(decodeJwtPayload(item), rows);
+    }
+    if (item && typeof item === "object") {
+      collectJwtIdentityFields(item, rows, depth + 1);
+    }
+  }
+}
+
 export function readJson(file) {
   if (!fs.existsSync(file)) return undefined;
   return JSON.parse(fs.readFileSync(file, "utf8"));
@@ -45,6 +90,7 @@ export function readJson(file) {
 export function credentialSummary(credential) {
   if (!credential || typeof credential !== "object") return undefined;
   const identity = collectIdentityFields(credential).slice(0, 8);
+  collectJwtIdentityFields(credential, identity);
   return {
     type: credential.type,
     fields: Object.keys(credential).filter((key) => !SECRET_KEY_RE.test(key)),

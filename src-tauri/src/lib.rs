@@ -1,3 +1,4 @@
+use base64::{engine::general_purpose::URL_SAFE, Engine as _};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 use std::{
@@ -793,9 +794,99 @@ fn collect_account_identity_fields(
     }
 }
 
+fn push_account_identity_field(
+    fields: &mut Vec<AuthAccountIdentity>,
+    field: &str,
+    value: Option<&Value>,
+) {
+    if fields.len() >= 8 {
+        return;
+    }
+    let Some(text) = value
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty() && value.len() <= 160)
+    else {
+        return;
+    };
+    if fields
+        .iter()
+        .any(|item| item.field == field && item.value == text)
+    {
+        return;
+    }
+    fields.push(AuthAccountIdentity {
+        field: field.to_string(),
+        value: text.to_string(),
+    });
+}
+
+fn decode_jwt_payload(token: &str) -> Option<Value> {
+    let payload = token.split('.').nth(1)?;
+    let padded = match payload.len() % 4 {
+        0 => payload.to_string(),
+        remainder => format!("{payload}{}", "=".repeat(4 - remainder)),
+    };
+    let bytes = URL_SAFE.decode(padded).ok()?;
+    serde_json::from_slice(&bytes).ok()
+}
+
+fn collect_jwt_payload_identity_fields(payload: &Value, fields: &mut Vec<AuthAccountIdentity>) {
+    let Some(object) = payload.as_object() else {
+        return;
+    };
+    push_account_identity_field(fields, "oauth.email", object.get("email"));
+    push_account_identity_field(fields, "oauth.sub", object.get("sub"));
+    push_account_identity_field(fields, "oauth.authProvider", object.get("auth_provider"));
+
+    let auth = object
+        .get("https://api.openai.com/auth")
+        .and_then(Value::as_object);
+    if let Some(auth) = auth {
+        push_account_identity_field(
+            fields,
+            "oauth.chatgptAccountId",
+            auth.get("chatgpt_account_id"),
+        );
+        push_account_identity_field(fields, "oauth.accountId", auth.get("account_id"));
+        push_account_identity_field(fields, "oauth.chatgptUserId", auth.get("chatgpt_user_id"));
+        push_account_identity_field(fields, "oauth.userId", auth.get("user_id"));
+    }
+}
+
+fn collect_jwt_identity_fields(value: &Value, depth: usize, fields: &mut Vec<AuthAccountIdentity>) {
+    if depth > 4 || fields.len() >= 8 {
+        return;
+    }
+    match value {
+        Value::Object(object) => {
+            for (key, item) in object {
+                if fields.len() >= 8 {
+                    return;
+                }
+                if field_name_is_secret(key) {
+                    if let Some(token) = item.as_str() {
+                        if let Some(payload) = decode_jwt_payload(token) {
+                            collect_jwt_payload_identity_fields(&payload, fields);
+                        }
+                    }
+                }
+                collect_jwt_identity_fields(item, depth + 1, fields);
+            }
+        }
+        Value::Array(items) => {
+            for item in items {
+                collect_jwt_identity_fields(item, depth + 1, fields);
+            }
+        }
+        _ => {}
+    }
+}
+
 fn account_identity(credential: &Value) -> Vec<AuthAccountIdentity> {
     let mut fields = Vec::new();
     collect_account_identity_fields(credential, "", 0, &mut fields);
+    collect_jwt_identity_fields(credential, 0, &mut fields);
     fields
 }
 
@@ -3073,6 +3164,7 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 
     fn official_provider() -> Provider {
         Provider::Official(OfficialProvider {
@@ -3434,6 +3526,44 @@ mod tests {
         assert!(identity.contains(&json!({ "field": "account.id", "value": "account-1" })));
         assert!(!value.to_string().contains("token-a"));
         assert!(!value.to_string().contains("refresh-token"));
+    }
+
+    #[test]
+    fn account_view_extracts_safe_identity_from_jwt_tokens() {
+        let payload = json!({
+            "email": "codex@example.test",
+            "sub": "user-subject",
+            "auth_provider": "openai",
+            "https://api.openai.com/auth": {
+                "chatgpt_account_id": "chatgpt-account-1",
+                "chatgpt_user_id": "chatgpt-user-1"
+            }
+        });
+        let token = format!(
+            "header.{}.signature",
+            URL_SAFE_NO_PAD.encode(payload.to_string())
+        );
+        let mut account = test_account("codex_a", "openai-codex", "token-a");
+        account.credential = json!({
+            "type": "oauth",
+            "tokens": {
+                "id_token": token
+            }
+        });
+
+        let value = serde_json::to_value(account_to_view(&account)).unwrap();
+
+        let identity = value["identity"].as_array().unwrap();
+        assert!(
+            identity.contains(&json!({ "field": "oauth.email", "value": "codex@example.test" }))
+        );
+        assert!(identity.contains(&json!({ "field": "oauth.sub", "value": "user-subject" })));
+        assert!(identity
+            .contains(&json!({ "field": "oauth.chatgptAccountId", "value": "chatgpt-account-1" })));
+        assert!(identity
+            .contains(&json!({ "field": "oauth.chatgptUserId", "value": "chatgpt-user-1" })));
+        assert!(!value.to_string().contains("header."));
+        assert!(!value.to_string().contains("signature"));
     }
 
     #[test]
