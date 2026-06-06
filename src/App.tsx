@@ -1191,10 +1191,37 @@ type CodexAccountSummary = {
   distinctIdentityCount: number;
   appliedDistinctIdentityCount: number;
   activeLabel: string;
+  savedEnough: boolean;
+  distinctEnough: boolean;
+  appliedDistinctEnough: boolean;
+  activeMatched: boolean;
+  likelySessionReuse: boolean;
   ready: boolean;
 };
 
 function CodexAccountReadiness({ summary, t }: { summary: CodexAccountSummary; t: ReturnType<typeof createTranslator> }) {
+  const checks = [
+    {
+      label: t("codexCheckSaved"),
+      value: `${summary.oauthCount}/2`,
+      done: summary.savedEnough,
+    },
+    {
+      label: t("codexCheckDistinct"),
+      value: `${summary.distinctIdentityCount}/2`,
+      done: summary.distinctEnough,
+    },
+    {
+      label: t("codexCheckApplied"),
+      value: `${summary.appliedDistinctIdentityCount}/2`,
+      done: summary.appliedDistinctEnough,
+    },
+    {
+      label: t("codexCheckActive"),
+      value: summary.activeLabel || t("none"),
+      done: summary.activeMatched,
+    },
+  ];
   return (
     <div className="grid gap-2 rounded-md border p-3 text-sm" style={{ borderColor: "var(--border)", background: "var(--bg)" }}>
       <div className="flex flex-wrap items-center justify-between gap-2">
@@ -1208,7 +1235,17 @@ function CodexAccountReadiness({ summary, t }: { summary: CodexAccountSummary; t
         <span className="model-meta">{t("codexAppliedDistinctIdentities")}: {summary.appliedDistinctIdentityCount}</span>
         <span className="model-meta">{t("codexActiveAccount")}: {summary.activeLabel || t("none")}</span>
       </div>
-      {!summary.ready ? <div className="muted">{t("codexReadinessHelp")}</div> : null}
+      <div className="readiness-checks">
+        {checks.map((check) => (
+          <div key={check.label} className={`readiness-check ${check.done ? "done" : ""}`}>
+            <span className="readiness-icon">{check.done ? <Check size={14} /> : <X size={14} />}</span>
+            <span>{check.label}</span>
+            <span className="model-meta">{check.value}</span>
+            <span className="model-meta">{check.done ? t("codexCheckDone") : t("codexCheckTodo")}</span>
+          </div>
+        ))}
+      </div>
+      {!summary.ready ? <div className="muted">{summary.likelySessionReuse ? t("codexSessionReuseHint") : t("codexReadinessHelp")}</div> : null}
     </div>
   );
 }
@@ -1904,13 +1941,22 @@ function codexAccountSummary(accounts: AuthAccount[]) {
   const identityKeys = new Set(oauthAccounts.map(accountIdentityKey).filter(Boolean));
   const appliedIdentityKeys = new Set(appliedAccounts.map(accountIdentityKey).filter(Boolean));
   const active = oauthAccounts.find((account) => account.activeInPi);
+  const savedEnough = oauthAccounts.length >= 2;
+  const distinctEnough = identityKeys.size >= 2;
+  const appliedDistinctEnough = appliedIdentityKeys.size >= 2;
+  const activeMatched = Boolean(active);
   return {
     oauthCount: oauthAccounts.length,
     appliedCount: appliedAccounts.length,
     distinctIdentityCount: identityKeys.size,
     appliedDistinctIdentityCount: appliedIdentityKeys.size,
     activeLabel: active?.label ?? "",
-    ready: oauthAccounts.length >= 2 && appliedAccounts.length >= 2 && identityKeys.size >= 2 && appliedIdentityKeys.size >= 2 && Boolean(active),
+    savedEnough,
+    distinctEnough,
+    appliedDistinctEnough,
+    activeMatched,
+    likelySessionReuse: savedEnough && !distinctEnough,
+    ready: savedEnough && appliedAccounts.length >= 2 && distinctEnough && appliedDistinctEnough && activeMatched,
   };
 }
 
