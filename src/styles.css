@@ -4,30 +4,30 @@
 
 :root {
   color-scheme: light;
-  --bg: #f5f6f3;
+  --bg: #f5f3ef;
   --surface: #ffffff;
-  --surface-muted: #edf1ee;
-  --text: #17201c;
-  --muted: #66736d;
-  --border: #cfd8d3;
-  --accent: #0f766e;
-  --accent-weak: #d9f3ef;
+  --surface-muted: #ede9e3;
+  --text: #1a1612;
+  --muted: #8a7a6a;
+  --border: #e0dbd4;
+  --accent: #c5622a;
+  --accent-weak: #fae0cc;
   --danger: #b42318;
-  --terminal: #111715;
+  --terminal: #1a1210;
 }
 
 .dark {
   color-scheme: dark;
-  --bg: #151816;
-  --surface: #202520;
-  --surface-muted: #29302a;
-  --text: #eef2ee;
-  --muted: #a9b4ad;
-  --border: #3d473f;
-  --accent: #5eead4;
-  --accent-weak: #123c38;
+  --bg: #1a1612;
+  --surface: #231f1b;
+  --surface-muted: #2c2622;
+  --text: #f0ebe4;
+  --muted: #a09080;
+  --border: #3d3530;
+  --accent: #e07840;
+  --accent-weak: #3d2010;
   --danger: #f87171;
-  --terminal: #0d1110;
+  --terminal: #0e0c0a;
 }
 
 * {
@@ -44,7 +44,7 @@ body {
   margin: 0;
   background: var(--bg);
   color: var(--text);
-  font-family: Inter, "Segoe UI", "Microsoft YaHei", "PingFang SC", "Noto Sans CJK SC", "Source Han Sans SC", system-ui, sans-serif;
+  font-family: "DM Sans", "Segoe UI", "Microsoft YaHei", "PingFang SC", "Noto Sans CJK SC", system-ui, sans-serif;
   font-size: 14px;
 }
 
