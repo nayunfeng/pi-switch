@@ -355,6 +355,7 @@ function App() {
         providers: config.providers.map((item) => (item.id === provider.id ? nextProvider : item)),
       };
       updateConfig(nextConfig);
+      await saveAppConfig(nextConfig);
       await applyAuthAccount(result.account.id);
       await refreshAccounts();
       showToast("success", t("oauthLoginSuccess"));
@@ -422,6 +423,7 @@ function App() {
         providers: config.providers.map((item) => (item.id === provider.id ? nextProvider : item)),
       };
       updateConfig(nextConfig);
+      await saveAppConfig(nextConfig);
       await applyAuthAccount(account.id);
       await refreshAccounts();
       showToast("success", t("providerApiKeySavedAsAccount"));
