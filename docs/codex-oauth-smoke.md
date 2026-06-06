@@ -36,6 +36,7 @@ npm run verify:codex-accounts
 - `codexOAuthIdentityCount` 大于等于 `2`
 - `appliedCodexOAuthIdentityCount` 大于等于 `2`
 - `activeOpenAICodexAccount.accountId` 指向当前应用的账号
+- `activeOpenAICodexAccount.match` 应为 `exact` 或 `oauthIdentity`
 - `accounts[*].credential.hasSecret` 可以是 `true`，但输出中不应出现 token/API key 原文
 
 辅助排查：
@@ -55,3 +56,4 @@ npm run audit:auth
 - `expected at least 2 distinct applied openai-codex OAuth identities`：保存了不同身份，但还没有分别应用这些不同身份。
 - `missing openai-codex entry in Pi auth.json`：账号保存了，但还没有应用到 Pi。
 - `current openai-codex Pi auth does not match a saved account`：Pi 当前认证和账号库无法匹配，尝试在 Accounts tab 重新应用目标账号。
+- `current openai-codex Pi auth only matched the latest applied OAuth account`：只靠最近应用账号推断当前账号，证据不够强。重新应用目标账号，或确认 OAuth token 中是否能解析出账号身份。

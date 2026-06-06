@@ -41,6 +41,9 @@ if (!audit.piAuth["openai-codex"]) {
 if (!activeMatch?.accountId) {
   failures.push("current openai-codex Pi auth does not match a saved account");
 }
+if (activeMatch?.match === "latestAppliedOAuth") {
+  failures.push("current openai-codex Pi auth only matched the latest applied OAuth account; expected exact or OAuth identity match");
+}
 if (activeMatch?.accountId && !codexOAuthAccounts.some((account) => account.id === activeMatch.accountId)) {
   failures.push(`active openai-codex account ${activeMatch.accountId} is not a saved OAuth account`);
 }
