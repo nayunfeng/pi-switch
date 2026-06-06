@@ -1,5 +1,27 @@
 # Repository Guidelines
 
+<!-- TRELLIS:START -->
+# Trellis Instructions
+
+These instructions are for AI assistants working in this project.
+
+This project is managed by Trellis. The working knowledge you need lives under `.trellis/`:
+
+- `.trellis/workflow.md` — development phases, when to create tasks, skill routing
+- `.trellis/spec/` — package- and layer-scoped coding guidelines (read before writing code in a given layer)
+- `.trellis/workspace/` — per-developer journals and session traces
+- `.trellis/tasks/` — active and archived tasks (PRDs, research, jsonl context)
+
+If a Trellis command is available on your platform (e.g. `/trellis:finish-work`, `/trellis:continue`), prefer it over manual steps. Not every platform exposes every command.
+
+If you're using Codex or another agent-capable tool, additional project-scoped helpers may live in:
+- `.agents/skills/` — reusable Trellis skills
+- `.codex/agents/` — optional custom subagents
+
+Managed by Trellis. Edits outside this block are preserved; edits inside may be overwritten by a future `trellis update`.
+
+<!-- TRELLIS:END -->
+
 ## 项目结构与模块组织
 
 Pi Switch 是一个 Tauri + React + TypeScript 桌面应用。前端代码位于 `src/`：`App.tsx` 是主界面，`commands.ts` 封装 Tauri 调用，`domain.ts` 定义共享类型，`i18n.ts` 管理中英文文案，`styles.css` 放 Tailwind 样式。Rust 后端位于 `src-tauri/src/`，负责配置读写、Pi 文件生成、命令执行等逻辑；Tauri 配置在 `src-tauri/tauri.conf.json`。脚本和 Node 测试在 `scripts/`。产品、设计和技术文档在 `docs/`，静态原型在 `prototypes/ui/`，字体在 `src/fonts/`，应用图标在 `src-tauri/icons/`。
