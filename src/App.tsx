@@ -453,6 +453,16 @@ function App() {
       const updated = await applyAuthAccount(account.id);
       await refreshAccounts();
       setSelectedAccountId(updated.id);
+      if (activeProvider?.kind === "official" && activeProvider.providerId === updated.providerId) {
+        updateConfig({
+          ...config,
+          providers: config.providers.map((provider) =>
+            provider.id === activeProvider.id
+              ? { ...activeProvider, authMode: "account", authAccountId: updated.id, apiKey: "" }
+              : provider,
+          ),
+        });
+      }
       showToast("success", t("accountApplied"));
     } catch (err) {
       showError(err);
