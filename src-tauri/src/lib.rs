@@ -738,9 +738,16 @@ fn identity_field_is_safe(key: &str) -> bool {
 
 fn field_name_is_secret(key: &str) -> bool {
     let lower = key.to_ascii_lowercase();
-    ["token", "key", "secret", "refresh", "access", "authorization"]
-        .iter()
-        .any(|needle| lower.contains(needle))
+    [
+        "token",
+        "key",
+        "secret",
+        "refresh",
+        "access",
+        "authorization",
+    ]
+    .iter()
+    .any(|needle| lower.contains(needle))
 }
 
 fn collect_account_identity_fields(
@@ -1147,6 +1154,15 @@ fn upsert_auth_account(
 ) -> AppResult<AuthAccount> {
     validate_official_provider_id(&provider_id)?;
     let now = now_timestamp_string();
+    if let Some(account) = store.accounts.iter_mut().find(|account| {
+        account.provider_id == provider_id
+            && account.kind == kind
+            && account.credential == credential
+    }) {
+        account.updated_at = now;
+        validate_account_credential(account)?;
+        return Ok(account.clone());
+    }
     let account = AuthAccount {
         id: create_account_id(),
         provider_id,
@@ -3341,6 +3357,29 @@ mod tests {
         assert_eq!(first.label, "openai-codex OAuth");
         assert_eq!(second.label, "openai-codex OAuth 2");
         assert_eq!(third.label, "openai-codex OAuth 3");
+    }
+
+    #[test]
+    fn duplicate_credentials_reuse_existing_account() {
+        let mut existing = test_account("codex_a", "openai-codex", "token-a");
+        existing.label = "Codex A".to_string();
+        let mut store = AccountsStore {
+            version: ACCOUNTS_VERSION,
+            accounts: vec![existing],
+        };
+
+        let account = upsert_auth_account(
+            &mut store,
+            "openai-codex".to_string(),
+            "openai-codex OAuth".to_string(),
+            AuthAccountKind::OAuth,
+            json!({ "type": "oauth", "accessToken": "token-a" }),
+        )
+        .unwrap();
+
+        assert_eq!(account.id, "codex_a");
+        assert_eq!(account.label, "Codex A");
+        assert_eq!(store.accounts.len(), 1);
     }
 
     #[test]
