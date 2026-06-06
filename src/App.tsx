@@ -454,14 +454,16 @@ function App() {
       await refreshAccounts();
       setSelectedAccountId(updated.id);
       if (activeProvider?.kind === "official" && activeProvider.providerId === updated.providerId) {
-        updateConfig({
+        const nextConfig = {
           ...config,
           providers: config.providers.map((provider) =>
             provider.id === activeProvider.id
-              ? { ...activeProvider, authMode: "account", authAccountId: updated.id, apiKey: "" }
+              ? { ...activeProvider, authMode: "account" as const, authAccountId: updated.id, apiKey: "" }
               : provider,
           ),
-        });
+        };
+        updateConfig(nextConfig);
+        await saveAppConfig(nextConfig);
       }
       showToast("success", t("accountApplied"));
     } catch (err) {
