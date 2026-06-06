@@ -1265,6 +1265,7 @@ function CodexAccountReadiness({
         <div className="empty-state readiness-empty">
           <strong>{t("codexNoAccountsTitle")}</strong>
           <span>{t("codexNoAccountsHelp")}</span>
+          <span>{t("codexNoOfficialAccountHelp")}</span>
           <button type="button" className="flex items-center gap-2" onClick={onAddFirstCodex} disabled={busy || oauthState.running}>
             <Plus size={15} /> {oauthState.running && oauthState.providerId === "openai-codex" ? t("running") : t("codexAddFirstAccount")}
           </button>
