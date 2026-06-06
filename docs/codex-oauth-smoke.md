@@ -57,3 +57,4 @@ npm run audit:auth
 - `missing openai-codex entry in Pi auth.json`：账号保存了，但还没有应用到 Pi。
 - `current openai-codex Pi auth does not match a saved account`：Pi 当前认证和账号库无法匹配，尝试在 Accounts tab 重新应用目标账号。
 - `current openai-codex Pi auth only matched the latest applied OAuth account`：只靠最近应用账号推断当前账号，证据不够强。重新应用目标账号，或确认 OAuth token 中是否能解析出账号身份。
+- `current openai-codex Pi auth used unsupported match`：验收脚本遇到未知匹配方式，不能作为强证据通过。

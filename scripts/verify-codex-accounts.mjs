@@ -1,6 +1,8 @@
 import { buildAuthAudit } from "./auth-audit-lib.mjs";
 import { pathToFileURL } from "node:url";
 
+const STRONG_ACTIVE_MATCHES = new Set(["exact", "oauthIdentity"]);
+
 export function buildCodexAccountsVerification(audit) {
   const codexAccounts = audit.accounts.rows.filter((account) => account.providerId === "openai-codex");
   const codexOAuthAccounts = codexAccounts.filter((account) => account.kind === "oauth");
@@ -44,6 +46,8 @@ export function buildCodexAccountsVerification(audit) {
   }
   if (activeMatch?.match === "latestAppliedOAuth") {
     failures.push("current openai-codex Pi auth only matched the latest applied OAuth account; expected exact or OAuth identity match");
+  } else if (activeMatch?.match && !STRONG_ACTIVE_MATCHES.has(activeMatch.match)) {
+    failures.push(`current openai-codex Pi auth used unsupported match ${activeMatch.match}; expected exact or OAuth identity match`);
   }
   if (activeMatch?.accountId && !codexOAuthAccounts.some((account) => account.id === activeMatch.accountId)) {
     failures.push(`active openai-codex account ${activeMatch.accountId} is not a saved OAuth account`);

@@ -89,6 +89,23 @@ test("Codex verification rejects latest applied fallback as weak active evidence
   assert(summary.failures.some((failure) => failure.includes("only matched the latest applied OAuth account")));
 });
 
+test("Codex verification rejects unknown active match types", () => {
+  const accounts = [
+    codexOAuthAccount("codex_a", "acct-a", "100"),
+    codexOAuthAccount("codex_b", "acct-b", "200"),
+  ];
+  const summary = buildCodexAccountsVerification(
+    auditWithCodexAccounts(accounts, {
+      accountId: "codex_a",
+      label: "codex_a",
+      match: "futureWeakMatch",
+    }),
+  );
+
+  assert.equal(summary.ok, false);
+  assert(summary.failures.some((failure) => failure.includes("unsupported match futureWeakMatch")));
+});
+
 test("Codex verification requires applied accounts to cover two distinct identities", () => {
   const accounts = [
     codexOAuthAccount("codex_a", "acct-a", "100"),
