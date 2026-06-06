@@ -119,6 +119,7 @@ function App() {
   const providerAdvancedDialogRef = useRef<HTMLDialogElement>(null);
   const outputDialogRef = useRef<HTMLDialogElement>(null);
   const openedOAuthUrlsRef = useRef<Set<string>>(new Set());
+  const openedEmptyAccountsRef = useRef(false);
   const language = config.language ?? systemLanguage();
   const t = useMemo(() => createTranslator(language), [language]);
   const activeProvider = config.providers.find((provider) => provider.id === config.activeProviderId);
@@ -226,6 +227,12 @@ function App() {
   async function refreshAccounts() {
     const store = await loadAuthAccounts();
     setAccounts(store.accounts);
+    if (store.accounts.length === 0 && !openedEmptyAccountsRef.current) {
+      openedEmptyAccountsRef.current = true;
+      setActiveTab("accounts");
+      setAccountProviderFilter("openai-codex");
+      setNewAccountProviderId("openai-codex");
+    }
   }
 
   function updateActiveProvider(provider: Provider) {
