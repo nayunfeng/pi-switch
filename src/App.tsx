@@ -1156,6 +1156,7 @@ type CodexAccountSummary = {
   oauthCount: number;
   appliedCount: number;
   distinctIdentityCount: number;
+  appliedDistinctIdentityCount: number;
   activeLabel: string;
   ready: boolean;
 };
@@ -1171,6 +1172,7 @@ function CodexAccountReadiness({ summary, t }: { summary: CodexAccountSummary; t
         <span className="model-meta">{t("codexOAuthAccounts")}: {summary.oauthCount}</span>
         <span className="model-meta">{t("codexAppliedAccounts")}: {summary.appliedCount}</span>
         <span className="model-meta">{t("codexDistinctIdentities")}: {summary.distinctIdentityCount}</span>
+        <span className="model-meta">{t("codexAppliedDistinctIdentities")}: {summary.appliedDistinctIdentityCount}</span>
         <span className="model-meta">{t("codexActiveAccount")}: {summary.activeLabel || t("none")}</span>
       </div>
       {!summary.ready ? <div className="muted">{t("codexReadinessHelp")}</div> : null}
@@ -1843,15 +1845,17 @@ function accountIdentityText(account: AuthAccount) {
 
 function codexAccountSummary(accounts: AuthAccount[]) {
   const oauthAccounts = accounts.filter((account) => account.providerId === "openai-codex" && account.kind === "oauth");
+  const appliedAccounts = oauthAccounts.filter((account) => account.lastAppliedAt);
   const identityKeys = new Set(oauthAccounts.map(accountIdentityKey).filter(Boolean));
+  const appliedIdentityKeys = new Set(appliedAccounts.map(accountIdentityKey).filter(Boolean));
   const active = oauthAccounts.find((account) => account.activeInPi);
-  const appliedCount = oauthAccounts.filter((account) => account.lastAppliedAt).length;
   return {
     oauthCount: oauthAccounts.length,
-    appliedCount,
+    appliedCount: appliedAccounts.length,
     distinctIdentityCount: identityKeys.size,
+    appliedDistinctIdentityCount: appliedIdentityKeys.size,
     activeLabel: active?.label ?? "",
-    ready: oauthAccounts.length >= 2 && appliedCount >= 2 && identityKeys.size >= 2 && Boolean(active),
+    ready: oauthAccounts.length >= 2 && appliedAccounts.length >= 2 && identityKeys.size >= 2 && appliedIdentityKeys.size >= 2 && Boolean(active),
   };
 }
 

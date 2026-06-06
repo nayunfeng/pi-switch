@@ -9,6 +9,11 @@ const codexOAuthIdentityKeys = new Set(
     .map((account) => account.credential?.identityKey)
     .filter(Boolean),
 );
+const appliedCodexOAuthIdentityKeys = new Set(
+  appliedCodexOAuthAccounts
+    .map((account) => account.credential?.identityKey)
+    .filter(Boolean),
+);
 const activeMatch = audit.activeMatches["openai-codex"];
 const failures = [];
 
@@ -27,6 +32,9 @@ if (appliedCodexOAuthAccounts.length < 2) {
 if (codexOAuthAccounts.length >= 2 && codexOAuthIdentityKeys.size < 2) {
   failures.push(`expected at least 2 distinct openai-codex OAuth identities, found ${codexOAuthIdentityKeys.size}`);
 }
+if (appliedCodexOAuthAccounts.length >= 2 && appliedCodexOAuthIdentityKeys.size < 2) {
+  failures.push(`expected at least 2 distinct applied openai-codex OAuth identities, found ${appliedCodexOAuthIdentityKeys.size}`);
+}
 if (!audit.piAuth["openai-codex"]) {
   failures.push("missing openai-codex entry in Pi auth.json");
 }
@@ -41,6 +49,8 @@ const summary = {
   ok: failures.length === 0,
   codexOAuthAccountCount: codexOAuthAccounts.length,
   appliedCodexOAuthAccountCount: appliedCodexOAuthAccounts.length,
+  codexOAuthIdentityCount: codexOAuthIdentityKeys.size,
+  appliedCodexOAuthIdentityCount: appliedCodexOAuthIdentityKeys.size,
   activeOpenAICodexAccount: activeMatch ?? null,
   accounts: codexOAuthAccounts.map((account) => ({
     id: account.id,
