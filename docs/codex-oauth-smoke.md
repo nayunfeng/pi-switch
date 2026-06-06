@@ -32,6 +32,7 @@ npm run verify:codex-accounts
 
 - 输出包含 `"ok": true`
 - `codexOAuthAccountCount` 大于等于 `2`
+- `appliedCodexOAuthAccountCount` 大于等于 `2`
 - `activeOpenAICodexAccount.accountId` 指向当前应用的账号
 - `accounts[*].credential.hasSecret` 可以是 `true`，但输出中不应出现 token/API key 原文
 
@@ -47,5 +48,6 @@ npm run audit:auth
 
 - `missing ~/PiSwitch/accounts.json`：还没有成功保存账号。
 - `expected at least 2 openai-codex OAuth accounts`：只保存了 0 或 1 个 Codex OAuth 账号。
+- `expected at least 2 openai-codex OAuth accounts to have been applied`：保存了多个账号，但还没有逐个点击 `Apply account` 完成切换验证。
 - `missing openai-codex entry in Pi auth.json`：账号保存了，但还没有应用到 Pi。
 - `current openai-codex Pi auth does not match a saved account`：Pi 当前认证和账号库无法匹配，尝试在 Accounts tab 重新应用目标账号。

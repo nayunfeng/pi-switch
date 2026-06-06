@@ -3,6 +3,7 @@ import { buildAuthAudit } from "./auth-audit-lib.mjs";
 const audit = buildAuthAudit();
 const codexAccounts = audit.accounts.rows.filter((account) => account.providerId === "openai-codex");
 const codexOAuthAccounts = codexAccounts.filter((account) => account.kind === "oauth");
+const appliedCodexOAuthAccounts = codexOAuthAccounts.filter((account) => account.lastAppliedAt);
 const activeMatch = audit.activeMatches["openai-codex"];
 const failures = [];
 
@@ -14,6 +15,9 @@ if (!audit.files.piAuth) {
 }
 if (codexOAuthAccounts.length < 2) {
   failures.push(`expected at least 2 openai-codex OAuth accounts, found ${codexOAuthAccounts.length}`);
+}
+if (appliedCodexOAuthAccounts.length < 2) {
+  failures.push(`expected at least 2 openai-codex OAuth accounts to have been applied, found ${appliedCodexOAuthAccounts.length}`);
 }
 if (!audit.piAuth["openai-codex"]) {
   failures.push("missing openai-codex entry in Pi auth.json");
@@ -28,6 +32,7 @@ if (activeMatch?.accountId && !codexOAuthAccounts.some((account) => account.id =
 const summary = {
   ok: failures.length === 0,
   codexOAuthAccountCount: codexOAuthAccounts.length,
+  appliedCodexOAuthAccountCount: appliedCodexOAuthAccounts.length,
   activeOpenAICodexAccount: activeMatch ?? null,
   accounts: codexOAuthAccounts.map((account) => ({
     id: account.id,
