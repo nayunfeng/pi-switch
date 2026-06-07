@@ -170,3 +170,36 @@ Redesigned provider management into row list plus right-side drawer, kept new pr
 ### Next Steps
 
 - None - task complete
+
+
+## Session 6: Provider empty draft auth defaults
+
+**Date**: 2026-06-07
+**Task**: Provider empty draft auth defaults
+**Branch**: `master`
+
+### Summary
+
+Made new provider drafts start with empty name and Base URL, and limited new official provider drafts to API Key authentication while preserving existing official provider auth options.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `7f3cf37` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
