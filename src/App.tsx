@@ -1405,7 +1405,6 @@ function AccountsPanel({
   const oauthAuthUrl = oauthAuthEvent && oauthAuthEvent.type === "auth" ? oauthAuthEvent.url : undefined;
   const oauthDeviceEvent = oauthRunning ? [...oauthState.events].reverse().find((event) => event.type === "deviceCode") : undefined;
   const oauthDeviceCode = oauthDeviceEvent && oauthDeviceEvent.type === "deviceCode" ? oauthDeviceEvent : undefined;
-  const codexSummary = codexAccountSummary(accounts);
   const providerFilterOptions = accountProviderFilterOptions(accounts, providers);
   return (
     <div className="grid max-w-[1040px] gap-4">
@@ -1566,18 +1565,6 @@ function AccountsPanel({
         )}
       </dialog>
 
-      <CodexAccountReadiness
-        summary={codexSummary}
-        busy={busy}
-        oauthState={oauthState}
-        onAddFirstCodex={() => {
-          onAddMode("oauth");
-          onOAuthProviderId("openai-codex");
-          addDialogRef.current?.showModal();
-        }}
-        t={t}
-      />
-
       <section className="grid gap-3">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <SectionTitle>{t("savedAccounts")}</SectionTitle>
@@ -1637,93 +1624,6 @@ function AccountsPanel({
           </div>
         </section>
       ) : null}
-    </div>
-  );
-}
-
-type CodexAccountSummary = {
-  oauthCount: number;
-  appliedCount: number;
-  distinctIdentityCount: number;
-  appliedDistinctIdentityCount: number;
-  activeLabel: string;
-  savedEnough: boolean;
-  distinctEnough: boolean;
-  appliedDistinctEnough: boolean;
-  activeMatched: boolean;
-  likelySessionReuse: boolean;
-  ready: boolean;
-};
-
-function CodexAccountReadiness({
-  summary,
-  busy,
-  oauthState,
-  onAddFirstCodex,
-  t,
-}: {
-  summary: CodexAccountSummary;
-  busy: boolean;
-  oauthState: OAuthState;
-  onAddFirstCodex: () => void;
-  t: ReturnType<typeof createTranslator>;
-}) {
-  const checks = [
-    {
-      label: t("codexCheckSaved"),
-      value: `${summary.oauthCount}/2`,
-      done: summary.savedEnough,
-    },
-    {
-      label: t("codexCheckDistinct"),
-      value: `${summary.distinctIdentityCount}/2`,
-      done: summary.distinctEnough,
-    },
-    {
-      label: t("codexCheckApplied"),
-      value: `${summary.appliedDistinctIdentityCount}/2`,
-      done: summary.appliedDistinctEnough,
-    },
-    {
-      label: t("codexCheckActive"),
-      value: summary.activeLabel || t("none"),
-      done: summary.activeMatched,
-    },
-  ];
-  return (
-    <div className="grid gap-2 rounded-md border p-3 text-sm" style={{ borderColor: "var(--border)", background: "var(--bg)" }}>
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <strong>{t("codexAccountReadiness")}</strong>
-        <span className="model-meta">{summary.ready ? t("ready") : t("notReady")}</span>
-      </div>
-      <div className="flex flex-wrap gap-2">
-        <span className="model-meta">{t("codexOAuthAccounts")}: {summary.oauthCount}</span>
-        <span className="model-meta">{t("codexAppliedAccounts")}: {summary.appliedCount}</span>
-        <span className="model-meta">{t("codexDistinctIdentities")}: {summary.distinctIdentityCount}</span>
-        <span className="model-meta">{t("codexAppliedDistinctIdentities")}: {summary.appliedDistinctIdentityCount}</span>
-        <span className="model-meta">{t("codexActiveAccount")}: {summary.activeLabel || t("none")}</span>
-      </div>
-      {summary.oauthCount === 0 ? (
-        <div className="empty-state readiness-empty">
-          <strong>{t("codexNoAccountsTitle")}</strong>
-          <span>{t("codexNoAccountsHelp")}</span>
-          <span>{t("codexNoOfficialAccountHelp")}</span>
-          <button type="button" className="flex items-center gap-2" onClick={onAddFirstCodex} disabled={busy || oauthState.running}>
-            <Plus size={15} /> {oauthState.running && oauthState.providerId === "openai-codex" ? t("running") : t("codexAddFirstAccount")}
-          </button>
-        </div>
-      ) : null}
-      <div className="readiness-checks">
-        {checks.map((check) => (
-          <div key={check.label} className={`readiness-check ${check.done ? "done" : ""}`}>
-            <span className="readiness-icon">{check.done ? <Check size={14} /> : <X size={14} />}</span>
-            <span>{check.label}</span>
-            <span className="model-meta">{check.value}</span>
-            <span className="model-meta">{check.done ? t("codexCheckDone") : t("codexCheckTodo")}</span>
-          </div>
-        ))}
-      </div>
-      {!summary.ready ? <div className="muted">{summary.likelySessionReuse ? t("codexSessionReuseHint") : t("codexReadinessHelp")}</div> : null}
     </div>
   );
 }
@@ -2440,55 +2340,6 @@ function accountOptionLabel(account: AuthAccount, t: ReturnType<typeof createTra
   ]
     .filter(Boolean)
     .join(" / ");
-}
-
-function codexAccountSummary(accounts: AuthAccount[]) {
-  const oauthAccounts = accounts.filter((account) => account.providerId === "openai-codex" && account.kind === "oauth");
-  const appliedAccounts = oauthAccounts.filter((account) => account.lastAppliedAt);
-  const identityKeys = new Set(oauthAccounts.map(accountIdentityKey).filter(Boolean));
-  const appliedIdentityKeys = new Set(appliedAccounts.map(accountIdentityKey).filter(Boolean));
-  const active = oauthAccounts.find((account) => account.activeInPi);
-  const savedEnough = oauthAccounts.length >= 2;
-  const distinctEnough = identityKeys.size >= 2;
-  const appliedDistinctEnough = appliedIdentityKeys.size >= 2;
-  const activeMatched = Boolean(active);
-  return {
-    oauthCount: oauthAccounts.length,
-    appliedCount: appliedAccounts.length,
-    distinctIdentityCount: identityKeys.size,
-    appliedDistinctIdentityCount: appliedIdentityKeys.size,
-    activeLabel: active?.label ?? "",
-    savedEnough,
-    distinctEnough,
-    appliedDistinctEnough,
-    activeMatched,
-    likelySessionReuse: savedEnough && !distinctEnough,
-    ready: savedEnough && appliedAccounts.length >= 2 && distinctEnough && appliedDistinctEnough && activeMatched,
-  };
-}
-
-function accountIdentityKey(account: AuthAccount) {
-  const identities = account.identity ?? [];
-  const priority = [
-    "oauth.chatgptAccountId",
-    "oauth.accountId",
-    "account.id",
-    "accountId",
-    "oauth.chatgptUserId",
-    "oauth.userId",
-    "user.id",
-    "oauth.sub",
-    "sub",
-    "subject",
-    "oauth.email",
-    "user.email",
-    "email",
-  ];
-  for (const field of priority) {
-    const match = identities.find((identity) => identity.field.toLowerCase() === field.toLowerCase());
-    if (match) return `${field.toLowerCase()}=${match.value}`;
-  }
-  return "";
 }
 
 function accountIdentityRank(field: string) {

@@ -318,20 +318,6 @@ label > span,
   padding: 12px;
 }
 
-.readiness-empty {
-  display: grid;
-  gap: 8px;
-  background: var(--surface);
-}
-
-.readiness-empty > strong {
-  color: var(--text);
-}
-
-.readiness-empty > button {
-  justify-self: start;
-}
-
 .model-check {
   display: flex;
   min-width: 0;
@@ -351,39 +337,6 @@ label > span,
   overflow-wrap: anywhere;
   color: var(--muted);
   font-size: 12px;
-}
-
-.readiness-checks {
-  display: grid;
-  gap: 6px;
-}
-
-.readiness-check {
-  display: grid;
-  grid-template-columns: 18px minmax(0, 1fr) minmax(44px, auto) minmax(56px, auto);
-  gap: 8px;
-  align-items: center;
-  min-height: 30px;
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  background: var(--surface);
-  padding: 5px 8px;
-}
-
-.readiness-check.done {
-  border-color: var(--accent);
-}
-
-.readiness-icon {
-  display: inline-grid;
-  width: 18px;
-  height: 18px;
-  place-items: center;
-  color: var(--danger);
-}
-
-.readiness-check.done .readiness-icon {
-  color: var(--accent);
 }
 
 .oauth-event {
@@ -609,14 +562,6 @@ button {
     grid-auto-flow: row;
     grid-auto-columns: unset;
     width: 100%;
-  }
-
-  .readiness-check {
-    grid-template-columns: 18px minmax(0, 1fr) minmax(38px, auto);
-  }
-
-  .readiness-check .model-meta:last-child {
-    grid-column: 2 / -1;
   }
 
 }
