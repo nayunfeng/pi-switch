@@ -2325,7 +2325,6 @@ async function waitForManualCode() {{
 if (!provider) {{
   throw new Error(`Unsupported OAuth provider: ${{providerId}}`);
 }}
-emit({{ type: "started", message: `Starting OAuth login for ${{provider.name}}` }});
 await auth.login(providerId, {{
   onAuth: (info) => emit({{ type: "auth", url: info.url, instructions: info.instructions }}),
   onDeviceCode: (info) => emit({{

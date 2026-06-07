@@ -1077,7 +1077,7 @@ function App() {
 
       {/* OAuth manual code dialog */}
       <dialog ref={oauthManualCodeDialogRef} className="dialog p-4" aria-labelledby="oauth-code-title">
-        <h3 id="oauth-code-title" className="m-0 mb-3 text-base font-semibold">{t("oauthManualCode")}</h3>
+        <h3 id="oauth-code-title" className="m-0 mb-3 text-base font-semibold">{t("oauthLogin")}</h3>
         <Field label={oauthManualCodeState?.message ?? t("oauthManualCodePrompt")}>
           <input
             value={oauthManualCodeInput}
@@ -1512,8 +1512,6 @@ function AccountsPanel({
                 }))}
               />
             </Field>
-            <div className="muted">{t("oauthAccountHelp")}</div>
-            <div className="muted">{t("oauthMultiAccountHelp")}</div>
             {!oauthRunning ? (
               <div className="flex flex-wrap justify-end gap-2">
                 <button type="button" onClick={() => addDialogRef.current?.close()}>{t("cancel")}</button>
@@ -1552,7 +1550,6 @@ function AccountsPanel({
                       </div>
                       {callbackError ? <div className="mt-1 text-xs" style={{ color: "var(--danger)" }}>{callbackError}</div> : null}
                     </Field>
-                    <div className="muted">{t("oauthAutoUpdateHint")}</div>
                   </>
                 ) : oauthDeviceCode ? (
                   <>
@@ -2161,11 +2158,15 @@ function OfficialProviderForm({
 }
 
 function OAuthEventList({ events, t }: { events: OAuthLoginEvent[]; t: ReturnType<typeof createTranslator> }) {
+  const visibleEvents = events
+    .map((event) => formatOAuthEvent(event, t))
+    .filter((message): message is string => Boolean(message));
+  if (visibleEvents.length === 0) return null;
   return (
     <div className="grid gap-1" aria-live="polite" aria-atomic="false">
-      {events.map((event, index) => (
-        <div key={`${event.type}-${index}`} className="oauth-event muted">
-          {formatOAuthEvent(event, t)}
+      {visibleEvents.map((message, index) => (
+        <div key={`${message}-${index}`} className="oauth-event muted">
+          {message}
         </div>
       ))}
     </div>
@@ -2173,14 +2174,13 @@ function OAuthEventList({ events, t }: { events: OAuthLoginEvent[]; t: ReturnTyp
 }
 
 function formatOAuthEvent(event: OAuthLoginEvent, t: ReturnType<typeof createTranslator>) {
-  if (event.type === "auth") return `${t("oauthOpenUrl")}: ${event.url}`;
+  if (event.type === "started" || event.type === "auth" || event.type === "manualCode") return undefined;
   if (event.type === "deviceCode") return `${t("oauthDeviceCode")}: ${event.userCode} / ${event.verificationUri}`;
-  if (event.type === "manualCode") return `${t("oauthManualCode")}: ${event.message ?? t("oauthManualCodePrompt")}`;
   if (event.type === "prompt") return `${t("oauthPrompt")}: ${event.message}`;
   if (event.type === "progress") return event.message;
   if (event.type === "success") return event.message ?? t("oauthLoginSuccess");
   if (event.type === "select") return `${event.message}: ${event.selected ?? ""}`;
-  return event.message ?? event.type;
+  return undefined;
 }
 
 function CustomProviderForm({
