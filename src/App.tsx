@@ -2261,6 +2261,13 @@ function OfficialProviderForm({
           }))}
         />
       </Field>
+      {isNewDraft ? (
+        <OfficialProviderAdvancedBasics
+          value={provider.advanced ?? {}}
+          onChange={(advanced) => onChange({ ...provider, advanced }, "headers")}
+          t={t}
+        />
+      ) : null}
       {isNewDraft ? null : (
         <div>
           <span className="field-label">{t("authMode")}</span>
@@ -2329,6 +2336,30 @@ function OfficialProviderForm({
         </section>
       ) : null}
       <AdvancedButton onClick={onOpenAdvanced} label={t("providerAdvanced")} help={t("providerAdvancedHelp")} />
+    </div>
+  );
+}
+
+function OfficialProviderAdvancedBasics({
+  value,
+  onChange,
+  t,
+}: {
+  value: NonNullable<Extract<Provider, { kind: "official" }>["advanced"]>;
+  onChange: (value: NonNullable<Extract<Provider, { kind: "official" }>["advanced"]>) => void;
+  t: ReturnType<typeof createTranslator>;
+}) {
+  return (
+    <div className="grid gap-4">
+      <div className="editor-grid grid grid-cols-2 gap-4">
+        <Field label={t("baseUrl")}>
+          <input value={value.baseUrl ?? ""} onChange={(event) => onChange({ ...value, baseUrl: event.target.value })} />
+        </Field>
+        <ApiSelect value={value.api ?? ""} onChange={(api) => onChange({ ...value, api })} label={t("apiType")} />
+      </div>
+      <LabeledField label={t("providerApiKeyOverride")} field="apiKey" help={t("providerApiKeyOverrideHelp")}>
+        <input value={value.apiKey ?? ""} onChange={(event) => onChange({ ...value, apiKey: event.target.value })} />
+      </LabeledField>
     </div>
   );
 }
@@ -2432,15 +2463,7 @@ function ProviderAdvancedForm({
 }) {
   return (
     <div className="grid gap-4 pt-3">
-      <div className="editor-grid grid grid-cols-2 gap-4">
-        <Field label={t("baseUrl")}>
-          <input value={value.baseUrl ?? ""} onChange={(event) => onChange({ ...value, baseUrl: event.target.value })} />
-        </Field>
-        <ApiSelect value={value.api ?? ""} onChange={(api) => onChange({ ...value, api })} label={t("apiType")} />
-      </div>
-      <LabeledField label={t("providerApiKeyOverride")} field="apiKey" help={t("providerApiKeyOverrideHelp")}>
-        <input value={value.apiKey ?? ""} onChange={(event) => onChange({ ...value, apiKey: event.target.value })} />
-      </LabeledField>
+      <OfficialProviderAdvancedBasics value={value} onChange={onChange} t={t} />
       <Checkbox checked={value.authHeader ?? false} onChange={(authHeader) => onChange({ ...value, authHeader })} label={t("authHeader")} help={t("authHeaderHelp")} />
       <HeadersEditor value={value.headers ?? []} onChange={(headers) => onChange({ ...value, headers })} error={fieldError(errors.headers, t)} t={t} />
       <CompatForm value={value.compat ?? {}} onChange={(compat) => onChange({ ...value, compat })} t={t} />
