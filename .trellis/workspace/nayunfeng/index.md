@@ -8,7 +8,7 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 14
+- **Total Sessions**: 15
 - **Last Active**: 2026-06-08
 <!-- @@@/auto:current-status -->
 
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~515 | Active |
+| `journal-1.md` | ~548 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 15 | 2026-06-08 | 修复启用账号默认项写入 | `f8317ba` | `master` |
 | 14 | 2026-06-08 | 调整账号启用和新增行为 | `970f15f` | `master` |
 | 13 | 2026-06-08 | 修复账号页操作和账号默认项 | `e3af081` | `master` |
 | 12 | 2026-06-08 | 修复网页预览和账号供应商选择 | `1383c09` | `master` |

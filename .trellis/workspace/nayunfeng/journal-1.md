@@ -513,3 +513,36 @@ No `.trellis/spec` update needed: this was a frontend-only interaction cleanup w
 ### Next Steps
 
 - None - task complete
+
+
+## Session 15: 修复启用账号默认项写入
+
+**Date**: 2026-06-08
+**Task**: 修复启用账号默认项写入
+**Branch**: `master`
+
+### Summary
+
+修复 apply_auth_account 对无 providerSnapshot 官方账号不更新 Pi settings.json 的问题；启用账号会恢复 defaultProvider，并在 config.json 能匹配供应商时同步 defaultModel/enabledModels。新增 Rust 回归测试并更新账号契约规范。验证通过 cargo test --manifest-path src-tauri/Cargo.toml --lib、npm run build、npm run test:auth、git diff --check。
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `f8317ba` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
