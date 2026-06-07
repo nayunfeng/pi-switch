@@ -122,6 +122,14 @@ const OFFICIAL_PROVIDER_BASE_URLS: Partial<Record<OfficialProviderId, string>> =
   "cloudflare-ai-gateway": "https://gateway.ai.cloudflare.com/v1/{account}/{gateway}",
 };
 
+function createEmptyCustomProviderDraft(): Extract<Provider, { kind: "custom" }> {
+  return { ...createCustomProvider(), name: "", baseUrl: "" };
+}
+
+function createEmptyOfficialProviderDraft(): Extract<Provider, { kind: "official" }> {
+  return { ...createOfficialProvider(), name: "", authMode: "apiKey", authAccountId: undefined };
+}
+
 function App() {
   const [config, setConfig] = useState<AppConfig>(() => normalizeConfig({ schemaVersion: 3, theme: "system", providers: [] }));
   const [accounts, setAccounts] = useState<AuthAccount[]>([]);
@@ -443,7 +451,7 @@ function App() {
   }
 
   function addProvider() {
-    const provider = createCustomProvider();
+    const provider = createEmptyCustomProviderDraft();
     setProviderValidation((state) => ({ ...state, [provider.id]: {} }));
     setProviderDraft(provider);
     setShowKey(false);
@@ -1918,6 +1926,7 @@ function ProvidersPanel({
   const customProviders = config.providers.filter((provider) => provider.kind === "custom");
   const isApplied = (provider: Provider) => providerIsApplied(provider, accounts);
   const isPersistedActiveProvider = activeProvider ? config.providers.some((provider) => provider.id === activeProvider.id) : false;
+  const isNewProviderDraft = activeProvider ? !isPersistedActiveProvider : false;
   const renderProviderRow = (provider: Provider) => (
     <div
       key={provider.id}
@@ -1984,7 +1993,9 @@ function ProvidersPanel({
                     value={activeProvider.kind}
                     aria-label={t("kind")}
                     onChange={(value) => {
-                      const replacement = value === "official" ? createOfficialProvider() : createCustomProvider();
+                      const replacement = value === "official"
+                        ? (isNewProviderDraft ? createEmptyOfficialProviderDraft() : createOfficialProvider())
+                        : (isNewProviderDraft ? createEmptyCustomProviderDraft() : createCustomProvider());
                       onChangeProvider({ ...replacement, id: activeProvider.id, name: activeProvider.name }, "kind");
                     }}
                     options={[
@@ -1997,6 +2008,7 @@ function ProvidersPanel({
               {activeProvider.kind === "official" ? (
                 <OfficialProviderForm
                   provider={activeProvider}
+                  isNewDraft={isNewProviderDraft}
                   onChange={onChangeProvider}
                   errors={errors}
                   showKey={showKey}
@@ -2184,6 +2196,7 @@ function providerSummary(provider: Provider, accounts: AuthAccount[], t: ReturnT
 
 function OfficialProviderForm({
   provider,
+  isNewDraft,
   onChange,
   errors,
   showKey,
@@ -2198,6 +2211,7 @@ function OfficialProviderForm({
   t,
 }: {
   provider: Extract<Provider, { kind: "official" }>;
+  isNewDraft: boolean;
   onChange: (provider: Provider, field: string) => void;
   errors: Record<string, string>;
   showKey: boolean;
@@ -2215,11 +2229,12 @@ function OfficialProviderForm({
   const oauthRunning = oauthState.running && oauthState.providerId === provider.providerId;
   const oauthDisabled = oauthState.running || busy;
   const providerAccounts = accounts.filter((account) => account.providerId === provider.providerId);
-  const authOptions: { mode: AuthMode; title: string; desc: string }[] = [
+  const allAuthOptions: { mode: AuthMode; title: string; desc: string }[] = [
     { mode: "existing", title: t("authExisting"), desc: t("oauthLoginHelp") },
     { mode: "account", title: t("authAccount"), desc: t("saveApiKeyAsAccountHelp") },
     { mode: "apiKey", title: t("authApiKey"), desc: t("providerApiKeyOverrideHelp") },
   ];
+  const authOptions = isNewDraft ? allAuthOptions.filter((option) => option.mode === "apiKey") : allAuthOptions;
   return (
     <div className="grid gap-4">
       <Field label={t("provider")}>
@@ -2231,8 +2246,8 @@ function OfficialProviderForm({
             onChange({
               ...provider,
               providerId,
-              name: OFFICIAL_PROVIDER_LABELS[providerId],
               authAccountId: undefined,
+              authMode: isNewDraft ? "apiKey" : provider.authMode,
               models: [],
               defaultModelId: "",
             }, "models");
