@@ -302,3 +302,36 @@ Moved official provider advanced baseUrl, api type, and provider API key overrid
 ### Next Steps
 
 - None - task complete
+
+
+## Session 10: Remove official provider auth mode UI
+
+**Date**: 2026-06-08
+**Task**: Remove official provider auth mode UI
+**Branch**: `master`
+
+### Summary
+
+移除官方供应商表单中的认证方式三选一和保存为账号并绑定流程，保存官方供应商时固定走 API Key 模式，并清理相关文案和样式死代码。
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `ecd4c9b` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
