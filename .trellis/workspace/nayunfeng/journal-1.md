@@ -38,3 +38,36 @@
 ### Next Steps
 
 - None - task complete
+
+
+## Session 2: 顶部标签工作台界面重构
+
+**Date**: 2026-06-07
+**Task**: 顶部标签工作台界面重构
+**Branch**: `master`
+
+### Summary
+
+把 Pi Switch 主面板从侧栏布局重构为顶部标签工作台：中性清爽配色、满宽富行账号列表、供应商列表+卡片式编辑表单、去品牌副标题、常驻操作栏+居中空状态；新增自定义 Select 组件替换全部原生 select（含 listbox Portal 进 dialog[open] 解决 top-layer 遮挡、fixed listbox 忽略自身滚动避免误关、键盘可达）。经 4 套设计稿选型(选定 workbench)与多轮验收后提交 84aa777，并归档 workbench-redesign 与 remove-codex-acceptance-panel 两个任务。
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `84aa777` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
