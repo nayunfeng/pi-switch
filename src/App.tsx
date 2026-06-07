@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import {
+  ArrowRight,
   Check,
   CirclePlay,
   CircleHelp,
@@ -10,11 +11,17 @@ import {
   Eye,
   EyeOff,
   ExternalLink,
+  Moon,
+  MoreVertical,
   Plus,
   RefreshCw,
   Save,
+  Server,
+  Settings,
   Settings2,
+  Sun,
   Trash2,
+  Users,
   X,
 } from "lucide-react";
 import {
@@ -62,6 +69,7 @@ import {
   validationErrors,
 } from "./domain";
 import { createTranslator, systemLanguage } from "./i18n";
+import { Select } from "./Select";
 
 type TestState = {
   status: "idle" | "running" | "success" | "failed" | "timeout";
@@ -166,6 +174,7 @@ function App() {
   const [oauthCallbackInput, setOAuthCallbackInput] = useState("");
   const [oauthCallbackError, setOAuthCallbackError] = useState("");
   const openedEmptyAccountsRef = useRef(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const language = config.language ?? systemLanguage();
   const t = useMemo(() => createTranslator(language), [language]);
   const activeProvider = config.providers.find((provider) => provider.id === config.activeProviderId);
@@ -815,282 +824,176 @@ function App() {
   }
 
   return (
-    <div className="grid min-h-screen grid-rows-[auto_1fr_auto]" style={{ background: "var(--bg)" }}>
+    <div className="app-shell">
       {toast ? <Toast toast={toast} onClose={() => setToast(undefined)} /> : null}
-      <header className="flex items-center justify-between gap-4 border-b px-5 py-3" style={{ borderColor: "var(--border)", background: "var(--surface)" }}>
-        <div>
-          <h1 className="m-0 text-xl font-semibold">{t("title")}</h1>
-          <p className="muted m-0">{t("subtitle")}</p>
+      <header className="topbar">
+        <div className="brand">
+          <div className="brand-mark" aria-hidden="true">
+            <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M6 4v16M6 9h6a3 3 0 0 0 0-6H6M14 9v11" />
+            </svg>
+          </div>
+          <div className="brand-text">
+            <span className="brand-name">{t("title")}</span>
+          </div>
         </div>
-        <div className="top-actions grid min-w-[330px] grid-cols-2 gap-2">
-          <label>
-            <span>{t("language")}</span>
-            <select value={language} onChange={(event) => updateConfig({ ...config, language: event.target.value as AppConfig["language"] })}>
-              <option value="zh-CN">中文</option>
-              <option value="en-US">English</option>
-            </select>
-          </label>
-          <label>
-            <span>{t("theme")}</span>
-            <select value={config.theme} onChange={(event) => updateConfig({ ...config, theme: event.target.value as ThemeMode })}>
-              <option value="system">{t("system")}</option>
-              <option value="light">{t("light")}</option>
-              <option value="dark">{t("dark")}</option>
-            </select>
-          </label>
+
+        <nav className="nav" role="tablist" aria-label={t("title")}>
+          <button type="button" className="nav-tab" role="tab" aria-selected={activeTab === "accounts"} onClick={() => setActiveTab("accounts")}>
+            <Users size={16} aria-hidden="true" />
+            {t("accounts")}
+            <span className="count">{accounts.length}</span>
+          </button>
+          <button type="button" className="nav-tab" role="tab" aria-selected={activeTab === "providers"} onClick={() => setActiveTab("providers")}>
+            <Server size={16} aria-hidden="true" />
+            {t("providers")}
+            <span className="count">{config.providers.length}</span>
+          </button>
+        </nav>
+
+        <div className="topbar-right">
+          <div className="theme-seg" role="group" aria-label={t("theme")}>
+            <button type="button" className={config.theme === "light" ? "active" : ""} title={t("light")} aria-label={t("light")} aria-pressed={config.theme === "light"} onClick={() => updateConfig({ ...config, theme: "light" })}>
+              <Sun size={15} aria-hidden="true" />
+            </button>
+            <button type="button" className={config.theme === "dark" ? "active" : ""} title={t("dark")} aria-label={t("dark")} aria-pressed={config.theme === "dark"} onClick={() => updateConfig({ ...config, theme: "dark" })}>
+              <Moon size={15} aria-hidden="true" />
+            </button>
+          </div>
+          <Popover
+            open={settingsOpen}
+            onOpenChange={setSettingsOpen}
+            align="right"
+            trigger={
+              <button type="button" className="icon-btn" title={t("settings")} aria-label={t("settings")} aria-haspopup="dialog" aria-expanded={settingsOpen} onClick={() => setSettingsOpen((value) => !value)}>
+                <Settings size={17} aria-hidden="true" />
+              </button>
+            }
+          >
+            <label>
+              <span>{t("language")}</span>
+              <Select
+                value={language}
+                onChange={(value) => updateConfig({ ...config, language: value as AppConfig["language"] })}
+                aria-label={t("language")}
+                options={[
+                  { value: "zh-CN", label: "中文" },
+                  { value: "en-US", label: "English" },
+                ]}
+              />
+            </label>
+            <label>
+              <span>{t("theme")}</span>
+              <Select
+                value={config.theme}
+                onChange={(value) => updateConfig({ ...config, theme: value as ThemeMode })}
+                aria-label={t("theme")}
+                options={[
+                  { value: "system", label: t("system") },
+                  { value: "light", label: t("light") },
+                  { value: "dark", label: t("dark") },
+                ]}
+              />
+            </label>
+          </Popover>
         </div>
       </header>
 
-      <main className="workspace grid min-h-0 grid-cols-[280px_minmax(0,1fr)]">
-        <aside className="min-h-0 border-r p-4" style={{ borderColor: "var(--border)", background: "var(--surface-muted)" }}>
-          <div className="mb-3 grid grid-cols-2 gap-2" role="tablist">
-            <button type="button" role="tab" aria-selected={activeTab === "providers"} className={activeTab === "providers" ? "primary" : ""} onClick={() => setActiveTab("providers")}>
-              {t("providers")}
-            </button>
-            <button type="button" role="tab" aria-selected={activeTab === "accounts"} className={activeTab === "accounts" ? "primary" : ""} onClick={() => setActiveTab("accounts")}>
-              {t("accounts")}
-            </button>
-          </div>
-          <div className="mb-3 flex items-center justify-between">
-            <h2 className="m-0 text-base font-semibold">{activeTab === "providers" ? t("providers") : t("accounts")}</h2>
-          </div>
-          {activeTab === "providers" ? (
-            <>
-              <div className="mb-3 grid grid-cols-2 gap-2">
-                <button type="button" className="flex items-center justify-center gap-2" onClick={addProvider}>
-                  <Plus size={15} /> {t("newProvider")}
-                </button>
-                <button type="button" className="flex items-center justify-center gap-2" onClick={duplicateProvider} disabled={!activeProvider}>
-                  <Copy size={15} /> {t("duplicate")}
-                </button>
-                <button type="button" className="danger col-span-2 flex items-center justify-center gap-2" onClick={() => deleteDialogRef.current?.showModal()} disabled={!activeProvider}>
-                  <Trash2 size={15} /> {t("delete")}
-                </button>
-              </div>
-              <div className="grid gap-2">
-                {config.providers.map((provider) => {
-                  const isSelected = provider.id === config.activeProviderId;
-                  const isApplied = provider.kind === "official" && provider.authMode === "account"
-                    ? accounts.some((a) => a.id === provider.authAccountId && a.activeInPi)
-                    : false;
-                  return (
-                    <button
-                      type="button"
-                      key={provider.id}
-                      className={`provider-item ${isSelected ? "active" : ""}`}
-                      onClick={() => updateConfig({ ...config, activeProviderId: provider.id })}
-                    >
-                      <div className="flex items-center justify-between gap-1">
-                        <strong>{provider.name}</strong>
-                        {isApplied ? <span className="rounded-full px-2 py-0.5 text-xs" style={{ background: "var(--accent)", color: "white" }}>Pi</span> : null}
-                      </div>
-                      <span className="provider-meta">
-                        {provider.kind === "official" ? t("official") : t("custom")} / {providerLabel(provider)}
-                      </span>
-                      <span className="provider-meta">{provider.defaultModelId || t("noDefaultModel")}</span>
-                    </button>
-                  );
-                })}
-              </div>
-            </>
-          ) : (
-            <div className="grid gap-2">
-              {filteredAccounts.map((account) => (
-                <button
-                  type="button"
-                  key={account.id}
-                  className={`provider-item ${account.id === selectedAccount?.id ? "active" : ""}`}
-                  onClick={() => setSelectedAccountId(account.id)}
-                >
-                  <strong>{account.label}</strong>
-                  {accountIdentityText(account) ? <span className="provider-meta">{accountIdentityText(account)}</span> : null}
-                  <span className="provider-meta">{accountProviderLabel(account.providerId, config.providers)} / {account.kind === "oauth" ? "OAuth" : "API Key"}</span>
-                  <span className="provider-meta">{account.activeInPi ? t("activeInPi") : t("saved")}</span>
-                </button>
-              ))}
-            </div>
-          )}
-        </aside>
-
-        <section className="min-w-0 overflow-auto p-5">
-          {activeTab === "accounts" ? (
-            <AccountsPanel
-              accounts={accounts}
-              filteredAccounts={filteredAccounts}
-              selectedAccount={selectedAccount}
-              providers={config.providers}
-              customProviders={customProviderOptions}
-              providerFilter={accountProviderFilter}
-              oauthProviderId={newOAuthProviderId}
-              apiKeyProviderSource={newApiKeyProviderSource}
-              apiKeyOfficialProviderId={newApiKeyOfficialProviderId}
-              apiKeyCustomProviderId={newApiKeyCustomProviderId}
-              apiKeyProviderId={newAccountProviderId}
-              baseUrl={newAccountBaseUrl}
-              apiKey={newAccountApiKey}
-              showApiKey={showAccountKey}
-              busy={accountBusy}
-              oauthState={oauthState}
-              addDialogRef={addAccountDialogRef}
-              addMode={newAccountMode}
-              onProviderFilter={setAccountProviderFilter}
-              onOAuthProviderId={setNewOAuthProviderId}
-              onApiKeyProviderSource={setNewApiKeyProviderSource}
-              onApiKeyOfficialProviderId={setNewApiKeyOfficialProviderId}
-              onApiKeyCustomProviderId={setNewApiKeyCustomProviderId}
-              onBaseUrl={setNewAccountBaseUrl}
-              onApiKey={setNewAccountApiKey}
-              onShowApiKey={setShowAccountKey}
-              onAddMode={changeAddMode}
-              onAddOAuth={addOAuthAccount}
-              onSubmitCallback={submitOAuthCallback}
-              onCancelOAuth={cancelOAuthInline}
-              callback={oauthCallbackInput}
-              callbackError={oauthCallbackError}
-              onCallback={(value) => { setOAuthCallbackInput(value); setOAuthCallbackError(""); }}
-              onDialogClose={handleAddDialogClose}
-              onAddApiKey={addApiKeyAccount}
-              onRefresh={refreshAccountState}
-              onApply={applySelectedAccount}
-              onRename={renameSelectedAccount}
-              onDuplicate={duplicateSelectedAccount}
-              onDelete={deleteSelectedAccount}
-              onSelect={setSelectedAccountId}
-              t={t}
-            />
-          ) : !activeProvider ? (
-            <div className="grid min-h-[420px] place-items-center">
-              <div className="grid gap-3 text-center">
-                <p className="muted m-0">{t("noProvider")}</p>
-                <button type="button" className="primary flex items-center justify-center gap-2" onClick={addProvider}>
-                  <Plus size={15} /> {t("newProvider")}
-                </button>
-              </div>
-            </div>
-          ) : (
-            <div className="grid max-w-[1040px] gap-4">
-              <div className="flex items-center justify-between gap-3">
-                <h2 className="m-0 text-lg font-semibold">{activeProvider.name}</h2>
-                <span className="rounded-full border px-3 py-1 text-xs" style={{ borderColor: "var(--border)", color: "var(--muted)" }}>
-                  {activeProvider.kind === "official" ? t("official") : t("custom")}
-                </span>
-              </div>
-
-              <div className="editor-grid grid grid-cols-2 gap-4">
-                <Field label={t("name")} error={fieldError(errors.name, t)} required>
-                  <input value={activeProvider.name} onChange={(event) => updateActiveProvider({ ...activeProvider, name: event.target.value })} />
-                </Field>
-                <Field label={t("kind")}>
-                  <select
-                    value={activeProvider.kind}
-                    onChange={(event) => {
-                      const replacement = event.target.value === "official" ? createOfficialProvider() : createCustomProvider();
-                      updateActiveProvider({ ...replacement, id: activeProvider.id, name: activeProvider.name });
-                    }}
-                  >
-                    <option value="official">{t("official")}</option>
-                    <option value="custom">{t("custom")}</option>
-                  </select>
-                </Field>
-              </div>
-
-              {activeProvider.kind === "official" ? (
-                <OfficialProviderForm
-                  provider={activeProvider}
-                  onChange={updateActiveProvider}
-                  errors={errors}
-                  showKey={showKey}
-                  setShowKey={setShowKey}
-                  onOpenAdvanced={() => providerAdvancedDialogRef.current?.showModal()}
-                  onLoginOAuth={loginOAuthProvider}
-                  onSaveApiKeyAsAccount={saveProviderApiKeyAsAccount}
-                  onManageAccounts={manageAccountsForProvider}
-                  oauthState={oauthState}
-                  accounts={accounts}
-                  busy={accountBusy}
-                  t={t}
-                />
-              ) : (
-                <CustomProviderForm provider={activeProvider} onChange={updateActiveProvider} errors={errors} showKey={showKey} setShowKey={setShowKey} onOpenAdvanced={() => providerAdvancedDialogRef.current?.showModal()} t={t} />
-              )}
-
-              <section className="grid gap-3">
-                <div className="flex flex-wrap items-center justify-between gap-3">
-                  <h3 className="m-0 text-base font-semibold">{t("models")}</h3>
-                  <div className="flex flex-wrap gap-2">
-                    {activeProvider.kind === "official" ? (
-                      <button type="button" className="flex items-center gap-2" onClick={refreshPiModels} disabled={piModelsLoading}>
-                        <RefreshCw size={15} /> {t("refreshPiModels")}
-                      </button>
-                    ) : (
-                      <button type="button" className="flex items-center gap-2" onClick={fetchModels} disabled={fetching}>
-                        <Download size={15} /> {t("fetchModels")}
-                      </button>
-                    )}
-                    <button type="button" className="flex items-center gap-2" onClick={() => openAddModelDialog()}>
-                      <Plus size={15} /> {t("addModel")}
-                    </button>
-                  </div>
-                </div>
-                {activeProvider.kind === "official" ? (
-                  <OfficialModelSelector
-                    provider={activeProvider}
-                    piModels={piModels}
-                    loading={piModelsLoading}
-                    search={piModelSearch}
-                    onSearch={setPiModelSearch}
-                    onToggle={toggleOfficialModel}
-                    onEdit={openEditModelDialog}
-                    onRemove={removeModel}
-                    t={t}
-                  />
-                ) : (
-                  <CustomModelSelector
-                    provider={activeProvider}
-                    candidateModels={candidateModels}
-                    selectedCandidates={selectedCandidates}
-                    search={modelSearch}
-                    fetching={fetching}
-                    onSearch={setModelSearch}
-                    onSelect={setSelectedCandidates}
-                    onAddSelected={addSelectedModels}
-                    onEdit={openEditModelDialog}
-                    onRemove={removeModel}
-                    t={t}
-                  />
-                )}
-
-                <Field label={t("defaultModel")} error={fieldError(errors.models, t)} required>
-                  <select value={activeProvider.defaultModelId} onChange={(event) => updateDefaultModel(event.target.value)} disabled={enabledModels(activeProvider).length === 0}>
-                    {enabledModels(activeProvider).map((model) => (
-                      <option key={model.id} value={model.id}>
-                        {model.id}
-                      </option>
-                    ))}
-                  </select>
-                </Field>
-              </section>
-
-              <div className="grid gap-3">
-                <div className="flex flex-wrap gap-2">
-                  <button type="button" className="primary flex items-center gap-2" onClick={() => saveCurrentConfig()} disabled={providerBusy}>
-                    <Save size={15} /> {t("save")}
-                  </button>
-                  <button type="button" className="flex items-center gap-2" onClick={applyCurrentProvider} disabled={providerBusy}>
-                    <Check size={15} /> {t("apply")}
-                  </button>
-                  <button type="button" className="flex items-center gap-2" onClick={testCurrentProvider} disabled={providerBusy}>
-                    <CirclePlay size={15} /> {t("test")}
-                  </button>
-                  <button type="button" onClick={() => outputDialogRef.current?.showModal()}>
-                    {t("viewOutput")}
-                  </button>
-                </div>
-              </div>
-            </div>
-          )}
-        </section>
-      </main>
+      <div className="main">
+        {activeTab === "accounts" ? (
+          <AccountsPanel
+            accounts={accounts}
+            filteredAccounts={filteredAccounts}
+            selectedAccount={selectedAccount}
+            activeAccount={accounts.find((account) => account.activeInPi)}
+            providers={config.providers}
+            customProviders={customProviderOptions}
+            providerFilter={accountProviderFilter}
+            oauthProviderId={newOAuthProviderId}
+            apiKeyProviderSource={newApiKeyProviderSource}
+            apiKeyOfficialProviderId={newApiKeyOfficialProviderId}
+            apiKeyCustomProviderId={newApiKeyCustomProviderId}
+            apiKeyProviderId={newAccountProviderId}
+            baseUrl={newAccountBaseUrl}
+            apiKey={newAccountApiKey}
+            showApiKey={showAccountKey}
+            busy={accountBusy}
+            oauthState={oauthState}
+            addDialogRef={addAccountDialogRef}
+            addMode={newAccountMode}
+            onProviderFilter={setAccountProviderFilter}
+            onOAuthProviderId={setNewOAuthProviderId}
+            onApiKeyProviderSource={setNewApiKeyProviderSource}
+            onApiKeyOfficialProviderId={setNewApiKeyOfficialProviderId}
+            onApiKeyCustomProviderId={setNewApiKeyCustomProviderId}
+            onBaseUrl={setNewAccountBaseUrl}
+            onApiKey={setNewAccountApiKey}
+            onShowApiKey={setShowAccountKey}
+            onAddMode={changeAddMode}
+            onAddOAuth={addOAuthAccount}
+            onSubmitCallback={submitOAuthCallback}
+            onCancelOAuth={cancelOAuthInline}
+            callback={oauthCallbackInput}
+            callbackError={oauthCallbackError}
+            onCallback={(value) => { setOAuthCallbackInput(value); setOAuthCallbackError(""); }}
+            onDialogClose={handleAddDialogClose}
+            onAddApiKey={addApiKeyAccount}
+            onRefresh={refreshAccountState}
+            onApply={applySelectedAccount}
+            onRename={renameSelectedAccount}
+            onDuplicate={duplicateSelectedAccount}
+            onDelete={deleteSelectedAccount}
+            onTest={testCurrentProvider}
+            onSelect={setSelectedAccountId}
+            t={t}
+          />
+        ) : (
+          <ProvidersPanel
+            config={config}
+            activeProvider={activeProvider}
+            accounts={accounts}
+            errors={errors}
+            showKey={showKey}
+            setShowKey={setShowKey}
+            providerBusy={providerBusy}
+            accountBusy={accountBusy}
+            piModels={piModels}
+            piModelsLoading={piModelsLoading}
+            piModelSearch={piModelSearch}
+            candidateModels={candidateModels}
+            selectedCandidates={selectedCandidates}
+            modelSearch={modelSearch}
+            fetching={fetching}
+            oauthState={oauthState}
+            testState={testState}
+            onSelectProvider={(id) => { updateConfig({ ...config, activeProviderId: id }); setShowKey(false); }}
+            onAddProvider={addProvider}
+            onDuplicateProvider={duplicateProvider}
+            onChangeProvider={updateActiveProvider}
+            onOpenDelete={() => deleteDialogRef.current?.showModal()}
+            onOpenAdvanced={() => providerAdvancedDialogRef.current?.showModal()}
+            onLoginOAuth={loginOAuthProvider}
+            onSaveApiKeyAsAccount={saveProviderApiKeyAsAccount}
+            onManageAccounts={manageAccountsForProvider}
+            onRefreshPiModels={refreshPiModels}
+            onPiModelSearch={setPiModelSearch}
+            onToggleOfficialModel={toggleOfficialModel}
+            onFetchModels={fetchModels}
+            onModelSearch={setModelSearch}
+            onSelectCandidates={setSelectedCandidates}
+            onAddSelectedModels={addSelectedModels}
+            onAddModel={() => openAddModelDialog()}
+            onEditModel={openEditModelDialog}
+            onRemoveModel={removeModel}
+            onUpdateDefaultModel={updateDefaultModel}
+            onSave={() => saveCurrentConfig()}
+            onApply={applyCurrentProvider}
+            onTest={testCurrentProvider}
+            onViewOutput={() => outputDialogRef.current?.showModal()}
+            t={t}
+          />
+        )}
+      </div>
 
       <dialog ref={outputDialogRef} className="dialog model-dialog p-4" aria-labelledby="output-dialog-title">
         <button type="button" className="dialog-close icon-button" aria-label={t("close")} onClick={() => outputDialogRef.current?.close()}>
@@ -1236,6 +1139,76 @@ function RequiredMark() {
   return <span className="required-mark" aria-hidden="true">*</span>;
 }
 
+function Popover({
+  open,
+  onOpenChange,
+  trigger,
+  children,
+  align = "right",
+  className,
+}: {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  trigger: React.ReactNode;
+  children: React.ReactNode;
+  align?: "left" | "right";
+  className?: string;
+}) {
+  const anchorRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!open) return;
+    const onPointerDown = (event: PointerEvent) => {
+      const target = event.target as Element | null;
+      // Ignore interactions inside a portaled Select listbox: it renders into a
+      // portal (document.body, or the nearest open dialog) outside this anchor,
+      // so without this guard clicking an option would close the popover before
+      // the option's onClick fires.
+      if (target?.closest("[data-listbox]")) return;
+      if (anchorRef.current && !anchorRef.current.contains(event.target as Node)) {
+        onOpenChange(false);
+      }
+    };
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") onOpenChange(false);
+    };
+    document.addEventListener("pointerdown", onPointerDown);
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.removeEventListener("pointerdown", onPointerDown);
+      document.removeEventListener("keydown", onKeyDown);
+    };
+  }, [open, onOpenChange]);
+  return (
+    <div className="popover-anchor" ref={anchorRef}>
+      {trigger}
+      {open ? (
+        <div className={`popover ${className ?? ""}`} role="dialog" style={align === "left" ? { right: "auto", left: 0 } : undefined}>
+          {children}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function providerAvatarClass(providerId: string): string {
+  const normalized = providerId.toLowerCase();
+  if (normalized.includes("codex") || normalized === "openai" || normalized.startsWith("openai")) return "codex";
+  if (normalized.includes("anthropic") || normalized.includes("claude")) return "anthropic";
+  if (normalized.includes("deepseek")) return "deepseek";
+  if (normalized.includes("copilot")) return "copilot";
+  if (isOfficialProviderId(providerId)) return "";
+  return "relay";
+}
+
+function avatarInitial(label: string): string {
+  const trimmed = label.trim();
+  return trimmed ? trimmed.charAt(0).toUpperCase() : "?";
+}
+
+function accountAuthLabel(account: AuthAccount): "OAuth" | "API Key" {
+  return account.kind === "oauth" ? "OAuth" : "API Key";
+}
+
 function Toast({ toast, onClose }: { toast: ToastState; onClose: () => void }) {
   const duration = toastDuration(toast.kind);
   return (
@@ -1316,6 +1289,7 @@ function AccountsPanel({
   accounts,
   filteredAccounts,
   selectedAccount,
+  activeAccount,
   providers,
   customProviders,
   providerFilter,
@@ -1353,12 +1327,14 @@ function AccountsPanel({
   onRename,
   onDuplicate,
   onDelete,
+  onTest,
   onSelect,
   t,
 }: {
   accounts: AuthAccount[];
   filteredAccounts: AuthAccount[];
   selectedAccount?: AuthAccount;
+  activeAccount?: AuthAccount;
   providers: Provider[];
   customProviders: Extract<Provider, { kind: "custom" }>[];
   providerFilter: AccountProviderFilter;
@@ -1395,6 +1371,7 @@ function AccountsPanel({
   onRename: (account: AuthAccount) => void;
   onDuplicate: (account: AuthAccount) => void;
   onDelete: (account: AuthAccount) => void;
+  onTest: () => void;
   onSelect: (accountId: string) => void;
   onProviderFilter: (value: AccountProviderFilter) => void;
   t: ReturnType<typeof createTranslator>;
@@ -1406,21 +1383,126 @@ function AccountsPanel({
   const oauthDeviceEvent = oauthRunning ? [...oauthState.events].reverse().find((event) => event.type === "deviceCode") : undefined;
   const oauthDeviceCode = oauthDeviceEvent && oauthDeviceEvent.type === "deviceCode" ? oauthDeviceEvent : undefined;
   const providerFilterOptions = accountProviderFilterOptions(accounts, providers);
+  const activeProviderForAccount = activeAccount
+    ? providers.find((provider) => provider.kind === "official" && provider.authMode === "account" && provider.authAccountId === activeAccount.id)
+    : undefined;
   return (
-    <div className="grid max-w-[1040px] gap-4">
-      <div className="flex items-center justify-between gap-3">
-        <h2 className="m-0 text-lg font-semibold">{t("accounts")}</h2>
-        <div className="flex flex-wrap items-center justify-end gap-2">
-          <button type="button" className="primary flex items-center gap-2" onClick={() => addDialogRef.current?.showModal()} disabled={busy}>
-            <Plus size={15} /> {t("addAccount")}
-          </button>
-          <button type="button" className="icon-button" title={t("refreshAccounts")} onClick={onRefresh} disabled={busy}>
+    <section className="screen" role="tabpanel" aria-label={t("accounts")}>
+      <div className="page-head">
+        <div className="page-title">
+          <h1>{t("accounts")}</h1>
+          <p>{t("accountsSubtitle")}</p>
+        </div>
+        <div className="head-actions">
+          {accounts.length > 0 ? (
+            <div className="scope" role="group" aria-label={t("accountFilter")}>
+              <button type="button" className={providerFilter === "all" ? "active" : ""} onClick={() => onProviderFilter("all")}>
+                {t("allAccounts")}
+              </button>
+              {providerFilterOptions.map((option) => (
+                <button key={option.id} type="button" className={providerFilter === option.id ? "active" : ""} onClick={() => onProviderFilter(option.id)}>
+                  {option.label}
+                </button>
+              ))}
+            </div>
+          ) : null}
+          <button type="button" className="btn icon-only" title={t("refreshAccounts")} aria-label={t("refreshAccounts")} onClick={onRefresh} disabled={busy}>
             <RefreshCw size={15} />
           </button>
-          <span className="rounded-full border px-3 py-1 text-xs" style={{ borderColor: "var(--border)", color: "var(--muted)" }}>
-            {filteredAccounts.length}/{accounts.length}
-          </span>
+          <button type="button" className="btn primary" onClick={() => addDialogRef.current?.showModal()} disabled={busy}>
+            <Plus size={15} /> {t("addAccount")}
+          </button>
         </div>
+      </div>
+
+      <div className="scroll">
+        {activeAccount ? (
+          <div className="pi-strip">
+            <div className="pi-icon" aria-hidden="true">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M6 4v16M6 9h6a3 3 0 0 0 0-6H6M14 9v11" />
+              </svg>
+            </div>
+            <div className="pi-body">
+              <span className="pi-label">{t("currentInPi")}</span>
+              <span className="pi-name">
+                <span className="truncate">{activeAccount.label}</span>
+                {accountIdentityText(activeAccount) ? <span className="dim">· {accountIdentityText(activeAccount)}</span> : null}
+              </span>
+            </div>
+            <div className="pi-meta">
+              <div className="pi-stat">
+                <span className="k">{t("provider")}</span>
+                <span className="v">{accountProviderLabel(activeAccount.providerId, providers)}</span>
+              </div>
+              {activeProviderForAccount?.defaultModelId ? (
+                <div className="pi-stat">
+                  <span className="k">{t("defaultModel")}</span>
+                  <span className="v">{activeProviderForAccount.defaultModelId}</span>
+                </div>
+              ) : null}
+              <div className="pi-stat">
+                <span className="k">{t("authMode")}</span>
+                <span className="v">{accountAuthLabel(activeAccount)}</span>
+              </div>
+              <button type="button" className="btn sm" onClick={onTest} disabled={busy || !activeProviderForAccount}>
+                <ArrowRight size={14} /> {t("test")}
+              </button>
+            </div>
+          </div>
+        ) : (
+          <div className="pi-strip empty">
+            <div className="pi-icon" aria-hidden="true">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M6 4v16M6 9h6a3 3 0 0 0 0-6H6M14 9v11" />
+              </svg>
+            </div>
+            <div className="pi-body">
+              <span className="pi-label">{t("currentInPi")}</span>
+              <span className="pi-name"><span className="truncate">{t("noActiveAccount")}</span></span>
+            </div>
+          </div>
+        )}
+
+        {accounts.length === 0 ? (
+          <section className="accounts-empty-state">
+            <div className="empty-illustration" aria-hidden="true">
+              <Users size={28} />
+            </div>
+            <SectionTitle>{t("noAccounts")}</SectionTitle>
+            <p className="muted m-0">{t("noAccountsHelp")}</p>
+          </section>
+        ) : (
+          <>
+            <div className="list-head">
+              <span>{t("accounts")}</span>
+              <span>{t("provider")}</span>
+              <span>{t("activeInPi")}</span>
+              <span className="right">{t("authMode")}</span>
+            </div>
+            {filteredAccounts.length === 0 ? (
+              <div className="empty-state">{t("noAccountsMatchFilter")}</div>
+            ) : (
+              <div className="list">
+                {filteredAccounts.map((account) => (
+                  <AccountRow
+                    key={account.id}
+                    account={account}
+                    selected={account.id === selectedAccount?.id}
+                    providers={providers}
+                    busy={busy}
+                    onSelect={onSelect}
+                    onApply={onApply}
+                    onRename={onRename}
+                    onDuplicate={onDuplicate}
+                    onDelete={onDelete}
+                    t={t}
+                  />
+                ))}
+              </div>
+            )}
+          </>
+        )}
       </div>
 
       <dialog ref={addDialogRef} className="dialog model-dialog p-4" aria-labelledby="add-account-dialog-title" onClose={onDialogClose}>
@@ -1439,13 +1521,16 @@ function AccountsPanel({
         {addMode === "oauth" ? (
           <div className="grid gap-4">
             <Field label={t("provider")}>
-              <select value={oauthProviderId} disabled={oauthRunning} onChange={(event) => onOAuthProviderId(event.target.value as OfficialProviderId)}>
-                {OFFICIAL_PROVIDER_IDS.filter(supportsOAuthLogin).map((id) => (
-                  <option key={id} value={id}>
-                    {OFFICIAL_PROVIDER_LABELS[id]}
-                  </option>
-                ))}
-              </select>
+              <Select
+                value={oauthProviderId}
+                disabled={oauthRunning}
+                aria-label={t("provider")}
+                onChange={(value) => onOAuthProviderId(value as OfficialProviderId)}
+                options={OFFICIAL_PROVIDER_IDS.filter(supportsOAuthLogin).map((id) => ({
+                  value: id,
+                  label: OFFICIAL_PROVIDER_LABELS[id],
+                }))}
+              />
             </Field>
             <div className="muted">{t("oauthAccountHelp")}</div>
             <div className="muted">{t("oauthMultiAccountHelp")}</div>
@@ -1531,23 +1616,25 @@ function AccountsPanel({
             </div>
             {apiKeyProviderSource === "official" ? (
               <Field label={t("provider")}>
-                <select value={apiKeyOfficialProviderId} onChange={(event) => onApiKeyOfficialProviderId(event.target.value as OfficialProviderId)}>
-                  {OFFICIAL_PROVIDER_IDS.map((id) => (
-                    <option key={id} value={id}>
-                      {OFFICIAL_PROVIDER_LABELS[id]}
-                    </option>
-                  ))}
-                </select>
+                <Select
+                  value={apiKeyOfficialProviderId}
+                  aria-label={t("provider")}
+                  onChange={(value) => onApiKeyOfficialProviderId(value as OfficialProviderId)}
+                  options={OFFICIAL_PROVIDER_IDS.map((id) => ({
+                    value: id,
+                    label: OFFICIAL_PROVIDER_LABELS[id],
+                  }))}
+                />
               </Field>
             ) : (
               <Field label={t("provider")}>
-                <select value={apiKeyCustomProviderId} onChange={(event) => onApiKeyCustomProviderId(event.target.value)} disabled={customProviders.length === 0}>
-                  {customProviders.map((provider) => (
-                    <option key={provider.id} value={provider.id}>
-                      {provider.name}
-                    </option>
-                  ))}
-                </select>
+                <Select
+                  value={apiKeyCustomProviderId}
+                  aria-label={t("provider")}
+                  disabled={customProviders.length === 0}
+                  onChange={onApiKeyCustomProviderId}
+                  options={customProviders.map((provider) => ({ value: provider.id, label: provider.name }))}
+                />
               </Field>
             )}
             <Field label={t("baseUrl")} required>
@@ -1564,80 +1651,407 @@ function AccountsPanel({
           </div>
         )}
       </dialog>
+    </section>
+  );
+}
 
-      {accounts.length === 0 ? (
-        <section className="accounts-empty-state">
-          <div className="grid max-w-[360px] gap-3">
-            <SectionTitle>{t("noAccounts")}</SectionTitle>
-            <p className="muted m-0">{t("noAccountsHelp")}</p>
-            <button type="button" className="primary flex w-fit items-center gap-2" onClick={() => addDialogRef.current?.showModal()} disabled={busy}>
-              <Plus size={15} /> {t("addAccount")}
+function AccountRow({
+  account,
+  selected,
+  providers,
+  busy,
+  onSelect,
+  onApply,
+  onRename,
+  onDuplicate,
+  onDelete,
+  t,
+}: {
+  account: AuthAccount;
+  selected: boolean;
+  providers: Provider[];
+  busy: boolean;
+  onSelect: (accountId: string) => void;
+  onApply: (account: AuthAccount) => void;
+  onRename: (account: AuthAccount) => void;
+  onDuplicate: (account: AuthAccount) => void;
+  onDelete: (account: AuthAccount) => void;
+  t: ReturnType<typeof createTranslator>;
+}) {
+  const [menuOpen, setMenuOpen] = useState(false);
+  const identity = accountIdentityText(account);
+  const auth = accountAuthLabel(account);
+  return (
+    <div
+      className={`row ${account.activeInPi ? "active" : ""} ${selected ? "selected" : ""}`}
+      onClick={() => onSelect(account.id)}
+    >
+      <div className="cell-name">
+        <div className={`avatar ${providerAvatarClass(account.providerId)}`} aria-hidden="true">{avatarInitial(account.label)}</div>
+        <div className="name-text">
+          <span className="n"><span className="truncate">{account.label}</span></span>
+          <span className="id">{identity || account.baseUrl || account.providerId}</span>
+        </div>
+      </div>
+      <div className="cell-provider">
+        <span className="pv">{accountProviderLabel(account.providerId, providers)}</span>
+        <span className="pv-sub">{isOfficialProviderId(account.providerId) ? t("official") : t("custom")}</span>
+      </div>
+      <div className="cell-state">
+        {account.activeInPi ? (
+          <span className="badge-active">
+            <Check size={12} /> {t("activeInPi")}
+          </span>
+        ) : (
+          <span className={`tag ${auth === "OAuth" ? "oauth" : "apikey"}`}><span className="dot" />{auth}</span>
+        )}
+      </div>
+      <div className="cell-action" onClick={(event) => event.stopPropagation()}>
+        {!account.activeInPi ? (
+          <button type="button" className="apply-btn" onClick={() => onApply(account)} disabled={busy}>
+            <ArrowRight size={14} /> {t("applyAccount")}
+          </button>
+        ) : null}
+        <Popover
+          open={menuOpen}
+          onOpenChange={setMenuOpen}
+          className="popover-menu"
+          trigger={
+            <button type="button" className="kebab" title={t("more")} aria-label={t("more")} aria-haspopup="menu" aria-expanded={menuOpen} onClick={() => setMenuOpen((value) => !value)}>
+              <MoreVertical size={16} />
             </button>
-          </div>
-        </section>
-      ) : (
-        <section className="grid gap-3">
-          <div className="flex flex-wrap items-center justify-between gap-3">
-            <SectionTitle>{t("savedAccounts")}</SectionTitle>
-            <label className="filter-control">
-              <span>{t("accountFilter")}</span>
-              <select value={providerFilter} onChange={(event) => onProviderFilter(event.target.value as AccountProviderFilter)}>
-                <option value="all">{t("allAccounts")}</option>
-                {providerFilterOptions.map((option) => (
-                  <option key={option.id} value={option.id}>
-                    {option.label}
-                  </option>
-                ))}
-              </select>
-            </label>
-          </div>
-          {filteredAccounts.length === 0 ? <div className="empty-state">{t("noAccountsMatchFilter")}</div> : null}
-          <div className="model-list">
-            {filteredAccounts.map((account) => (
-              <div
-                key={account.id}
-                className={`account-row ${account.id === selectedAccount?.id ? "active" : ""}`}
-                onClick={() => onSelect(account.id)}
-              >
-                <strong>{account.label}</strong>
-                <span className="model-id">{accountIdentityText(account) || account.baseUrl || account.providerId}</span>
-                <span className="model-meta">{accountProviderLabel(account.providerId, providers)}</span>
-                <span className="model-meta">{account.kind === "oauth" ? "OAuth" : "API Key"}</span>
-                <span className="model-meta">{account.activeInPi ? t("activeInPi") : t("saved")}</span>
-                <button
-                  type="button"
-                  onClick={(event) => {
-                    event.stopPropagation();
-                    onApply(account);
-                  }}
-                  disabled={busy}
-                >
-                  {t("applyAccount")}
-                </button>
-              </div>
-            ))}
-          </div>
-        </section>
-      )}
-
-      {selectedAccount ? (
-        <section className="grid gap-3 rounded-md border p-4" style={{ borderColor: "var(--border)", background: "var(--surface)" }}>
-          <div>
-            <h3 className="m-0 text-base font-semibold">{selectedAccount.label}</h3>
-            {accountIdentityText(selectedAccount) ? <div className="muted">{accountIdentityText(selectedAccount)}</div> : null}
-            <div className="muted">{accountProviderLabel(selectedAccount.providerId, providers)} / {selectedAccount.kind === "oauth" ? "OAuth" : "API Key"} / {selectedAccount.id}</div>
-            {selectedAccount.baseUrl ? <div className="model-id muted">{selectedAccount.baseUrl}</div> : null}
-          </div>
-          <div className="flex flex-wrap gap-2">
-            <button type="button" onClick={() => onApply(selectedAccount)} disabled={busy}>{t("applyAccount")}</button>
-            <button type="button" onClick={() => onRename(selectedAccount)} disabled={busy}>{t("renameAccount")}</button>
-            <button type="button" onClick={() => onDuplicate(selectedAccount)} disabled={busy}>{t("duplicate")}</button>
-            <button type="button" className="danger" onClick={() => onDelete(selectedAccount)} disabled={busy}>{t("delete")}</button>
-          </div>
-        </section>
-      ) : null}
+          }
+        >
+          <button type="button" onClick={() => { setMenuOpen(false); onRename(account); }} disabled={busy}>
+            <Settings2 size={14} /> {t("renameAccount")}
+          </button>
+          <button type="button" onClick={() => { setMenuOpen(false); onDuplicate(account); }} disabled={busy}>
+            <Copy size={14} /> {t("duplicate")}
+          </button>
+          <button type="button" className="danger" onClick={() => { setMenuOpen(false); onDelete(account); }} disabled={busy}>
+            <Trash2 size={14} /> {t("delete")}
+          </button>
+        </Popover>
+      </div>
     </div>
   );
+}
+
+function ProvidersPanel({
+  config,
+  activeProvider,
+  accounts,
+  errors,
+  showKey,
+  setShowKey,
+  providerBusy,
+  accountBusy,
+  piModels,
+  piModelsLoading,
+  piModelSearch,
+  candidateModels,
+  selectedCandidates,
+  modelSearch,
+  fetching,
+  oauthState,
+  testState,
+  onSelectProvider,
+  onAddProvider,
+  onDuplicateProvider,
+  onChangeProvider,
+  onOpenDelete,
+  onOpenAdvanced,
+  onLoginOAuth,
+  onSaveApiKeyAsAccount,
+  onManageAccounts,
+  onRefreshPiModels,
+  onPiModelSearch,
+  onToggleOfficialModel,
+  onFetchModels,
+  onModelSearch,
+  onSelectCandidates,
+  onAddSelectedModels,
+  onAddModel,
+  onEditModel,
+  onRemoveModel,
+  onUpdateDefaultModel,
+  onSave,
+  onApply,
+  onTest,
+  onViewOutput,
+  t,
+}: {
+  config: AppConfig;
+  activeProvider?: Provider;
+  accounts: AuthAccount[];
+  errors: Record<string, string>;
+  showKey: boolean;
+  setShowKey: (show: boolean) => void;
+  providerBusy: boolean;
+  accountBusy: boolean;
+  piModels: PiModelInfo[];
+  piModelsLoading: boolean;
+  piModelSearch: string;
+  candidateModels: string[];
+  selectedCandidates: Set<string>;
+  modelSearch: string;
+  fetching: boolean;
+  oauthState: OAuthState;
+  testState: TestState;
+  onSelectProvider: (id: string) => void;
+  onAddProvider: () => void;
+  onDuplicateProvider: () => void;
+  onChangeProvider: (provider: Provider) => void;
+  onOpenDelete: () => void;
+  onOpenAdvanced: () => void;
+  onLoginOAuth: (provider: Extract<Provider, { kind: "official" }>) => void;
+  onSaveApiKeyAsAccount: (provider: Extract<Provider, { kind: "official" }>) => void;
+  onManageAccounts: (providerId: OfficialProviderId) => void;
+  onRefreshPiModels: () => void;
+  onPiModelSearch: (value: string) => void;
+  onToggleOfficialModel: (modelId: string, checked: boolean) => void;
+  onFetchModels: () => void;
+  onModelSearch: (value: string) => void;
+  onSelectCandidates: (value: Set<string>) => void;
+  onAddSelectedModels: () => void;
+  onAddModel: () => void;
+  onEditModel: (model: ModelConfig, index: number) => void;
+  onRemoveModel: (model: ModelConfig) => void;
+  onUpdateDefaultModel: (defaultModelId: string) => void;
+  onSave: () => void;
+  onApply: () => void;
+  onTest: () => void;
+  onViewOutput: () => void;
+  t: ReturnType<typeof createTranslator>;
+}) {
+  const officialProviders = config.providers.filter((provider) => provider.kind === "official");
+  const customProviders = config.providers.filter((provider) => provider.kind === "custom");
+  const isApplied = (provider: Provider) =>
+    provider.kind === "official" && provider.authMode === "account"
+      ? accounts.some((account) => account.id === provider.authAccountId && account.activeInPi)
+      : false;
+  const renderProviderItem = (provider: Provider) => (
+    <button
+      type="button"
+      key={provider.id}
+      className={`prov-item ${provider.id === config.activeProviderId ? "active" : ""}`}
+      aria-pressed={provider.id === config.activeProviderId}
+      onClick={() => onSelectProvider(provider.id)}
+    >
+      <span className={`pi-dot avatar ${providerAvatarClass(piProviderId(provider))}`}>{avatarInitial(provider.name)}</span>
+      <span className="meta">
+        <span className="pn">{provider.name}</span>
+        <span className="pt">{providerSummary(provider, accounts, t)}</span>
+      </span>
+      {isApplied(provider) ? <span className="live" title={t("activeInPi")} /> : null}
+    </button>
+  );
+  return (
+    <section className="screen" role="tabpanel" aria-label={t("providers")}>
+      <div className="page-head">
+        <div className="page-title">
+          <h1>{t("providers")}</h1>
+          <p>{t("providersSubtitle")}</p>
+        </div>
+        <div className="head-actions">
+          {activeProvider ? (
+            <button type="button" className="btn" onClick={onDuplicateProvider}>
+              <Copy size={15} /> {t("duplicate")}
+            </button>
+          ) : null}
+          <button type="button" className="btn primary" onClick={onAddProvider}>
+            <Plus size={15} /> {t("newProvider")}
+          </button>
+        </div>
+      </div>
+
+      {config.providers.length === 0 ? (
+        <div className="prov-empty">
+          <div className="empty-illustration" aria-hidden="true">
+            <Server size={28} />
+          </div>
+          <p className="muted m-0">{t("noProvider")}</p>
+        </div>
+      ) : (
+        <div className="prov-layout">
+          <aside className="prov-list" aria-label={t("providers")}>
+            {officialProviders.length > 0 ? <div className="prov-list-label">{t("official")}</div> : null}
+            {officialProviders.map(renderProviderItem)}
+            {customProviders.length > 0 ? <div className="prov-list-label">{t("custom")}</div> : null}
+            {customProviders.map(renderProviderItem)}
+          </aside>
+
+          {activeProvider ? (
+            <div className="prov-form">
+              <div className="form-top">
+                <div className={`ft-icon avatar ${providerAvatarClass(piProviderId(activeProvider))}`}>{avatarInitial(activeProvider.name)}</div>
+                <div className="ft-text">
+                  <h2>
+                    {activeProvider.name}
+                    {isApplied(activeProvider) ? (
+                      <span className="badge-active"><Check size={12} /> {t("activeInPi")}</span>
+                    ) : null}
+                  </h2>
+                  <p>{activeProvider.kind === "official" ? t("official") : t("custom")} · {providerLabel(activeProvider)}</p>
+                </div>
+                <div className="ft-actions">
+                  <button type="button" className="btn sm" onClick={onTest} disabled={providerBusy}>
+                    <CirclePlay size={14} /> {t("test")}
+                  </button>
+                  <button type="button" className="btn sm ghost" onClick={onViewOutput}>
+                    {t("viewOutput")}
+                  </button>
+                  <button type="button" className="btn sm danger-text" onClick={onOpenDelete}>
+                    <Trash2 size={14} /> {t("delete")}
+                  </button>
+                </div>
+              </div>
+
+              <div className="card">
+                <div className="card-title">{t("basicInfo")}</div>
+                <div className="editor-grid grid grid-cols-2 gap-4">
+                  <Field label={t("name")} error={fieldError(errors.name, t)} required>
+                    <input value={activeProvider.name} onChange={(event) => onChangeProvider({ ...activeProvider, name: event.target.value })} />
+                  </Field>
+                  <Field label={t("kind")}>
+                    <Select
+                      value={activeProvider.kind}
+                      aria-label={t("kind")}
+                      onChange={(value) => {
+                        const replacement = value === "official" ? createOfficialProvider() : createCustomProvider();
+                        onChangeProvider({ ...replacement, id: activeProvider.id, name: activeProvider.name });
+                      }}
+                      options={[
+                        { value: "official", label: t("official") },
+                        { value: "custom", label: t("custom") },
+                      ]}
+                    />
+                  </Field>
+                </div>
+                {activeProvider.kind === "official" ? (
+                  <OfficialProviderForm
+                    provider={activeProvider}
+                    onChange={onChangeProvider}
+                    errors={errors}
+                    showKey={showKey}
+                    setShowKey={setShowKey}
+                    onOpenAdvanced={onOpenAdvanced}
+                    onLoginOAuth={onLoginOAuth}
+                    onSaveApiKeyAsAccount={onSaveApiKeyAsAccount}
+                    onManageAccounts={onManageAccounts}
+                    oauthState={oauthState}
+                    accounts={accounts}
+                    busy={accountBusy}
+                    t={t}
+                  />
+                ) : (
+                  <CustomProviderForm
+                    provider={activeProvider}
+                    onChange={onChangeProvider}
+                    errors={errors}
+                    showKey={showKey}
+                    setShowKey={setShowKey}
+                    onOpenAdvanced={onOpenAdvanced}
+                    t={t}
+                  />
+                )}
+              </div>
+
+              <div className="card">
+                <div className="card-title">
+                  {t("models")}
+                  {activeProvider.kind === "official" ? (
+                    <button type="button" className="btn sm ghost" style={{ marginLeft: "auto", height: 26 }} onClick={onRefreshPiModels} disabled={piModelsLoading}>
+                      <RefreshCw size={14} /> {t("refreshPiModels")}
+                    </button>
+                  ) : (
+                    <button type="button" className="btn sm ghost" style={{ marginLeft: "auto", height: 26 }} onClick={onFetchModels} disabled={fetching}>
+                      <Download size={14} /> {t("fetchModels")}
+                    </button>
+                  )}
+                  <button type="button" className="btn sm" style={{ height: 26 }} onClick={onAddModel}>
+                    <Plus size={14} /> {t("addModel")}
+                  </button>
+                </div>
+                {activeProvider.kind === "official" ? (
+                  <OfficialModelSelector
+                    provider={activeProvider}
+                    piModels={piModels}
+                    loading={piModelsLoading}
+                    search={piModelSearch}
+                    onSearch={onPiModelSearch}
+                    onToggle={onToggleOfficialModel}
+                    onEdit={onEditModel}
+                    onRemove={onRemoveModel}
+                    t={t}
+                  />
+                ) : (
+                  <CustomModelSelector
+                    provider={activeProvider}
+                    candidateModels={candidateModels}
+                    selectedCandidates={selectedCandidates}
+                    search={modelSearch}
+                    fetching={fetching}
+                    onSearch={onModelSearch}
+                    onSelect={onSelectCandidates}
+                    onAddSelected={onAddSelectedModels}
+                    onEdit={onEditModel}
+                    onRemove={onRemoveModel}
+                    t={t}
+                  />
+                )}
+                <Field label={t("defaultModel")} error={fieldError(errors.models, t)} required>
+                  <Select
+                    value={activeProvider.defaultModelId}
+                    aria-label={t("defaultModel")}
+                    disabled={enabledModels(activeProvider).length === 0}
+                    onChange={onUpdateDefaultModel}
+                    options={enabledModels(activeProvider).map((model) => ({ value: model.id, label: model.id }))}
+                  />
+                </Field>
+              </div>
+
+              <div className="form-footer">
+                <div className="left">
+                  <span className="muted" style={{ fontSize: "11.5px" }}>{testState.status === "idle" ? t("autoStaged") : t(testState.status)}</span>
+                </div>
+                <div className="right">
+                  <button type="button" className="btn" onClick={onSave} disabled={providerBusy}>
+                    <Save size={15} /> {t("save")}
+                  </button>
+                  <button type="button" className="btn primary" onClick={onApply} disabled={providerBusy}>
+                    <Check size={15} /> {t("apply")}
+                  </button>
+                </div>
+              </div>
+            </div>
+          ) : (
+            <div className="prov-empty">
+              <div className="grid gap-3 text-center">
+                <p className="muted m-0">{t("noProvider")}</p>
+                <button type="button" className="btn primary mx-auto" onClick={onAddProvider}>
+                  <Plus size={15} /> {t("newProvider")}
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+    </section>
+  );
+}
+
+function providerSummary(provider: Provider, accounts: AuthAccount[], t: ReturnType<typeof createTranslator>) {
+  if (provider.kind === "custom") {
+    return provider.baseUrl || provider.api || t("custom");
+  }
+  if (provider.authMode === "account") {
+    const account = accounts.find((item) => item.id === provider.authAccountId);
+    const accountPart = account ? `${t("authAccount")} · ${account.label}` : t("authAccount");
+    return provider.defaultModelId ? `${accountPart} · ${provider.defaultModelId}` : accountPart;
+  }
+  if (provider.authMode === "apiKey") return t("authApiKey");
+  return provider.defaultModelId ? `${t("authExisting")} · ${provider.defaultModelId}` : t("authExisting");
 }
 
 function OfficialProviderForm({
@@ -1673,50 +2087,68 @@ function OfficialProviderForm({
   const oauthRunning = oauthState.running && oauthState.providerId === provider.providerId;
   const oauthDisabled = oauthState.running || busy;
   const providerAccounts = accounts.filter((account) => account.providerId === provider.providerId);
+  const authOptions: { mode: AuthMode; title: string; desc: string }[] = [
+    { mode: "existing", title: t("authExisting"), desc: t("oauthLoginHelp") },
+    { mode: "account", title: t("authAccount"), desc: t("saveApiKeyAsAccountHelp") },
+    { mode: "apiKey", title: t("authApiKey"), desc: t("providerApiKeyOverrideHelp") },
+  ];
   return (
     <div className="grid gap-4">
-      <div className="editor-grid grid grid-cols-2 gap-4">
-        <Field label={t("provider")}>
-          <select
-            value={provider.providerId}
-            onChange={(event) => {
-              const providerId = event.target.value as OfficialProviderId;
-              onChange({
-                ...provider,
-                providerId,
-                name: OFFICIAL_PROVIDER_LABELS[providerId],
-                authAccountId: undefined,
-                models: [],
-                defaultModelId: "",
-              });
-            }}
-          >
-            {OFFICIAL_PROVIDER_IDS.map((providerId) => (
-              <option key={providerId} value={providerId}>
-                {OFFICIAL_PROVIDER_LABELS[providerId]}
-              </option>
-            ))}
-          </select>
-        </Field>
-        <Field label={t("authMode")}>
-          <select value={provider.authMode} onChange={(event) => onChange({ ...provider, authMode: event.target.value as AuthMode })}>
-            <option value="existing">{t("authExisting")}</option>
-            <option value="account">{t("authAccount")}</option>
-            <option value="apiKey">{t("authApiKey")}</option>
-          </select>
-        </Field>
+      <Field label={t("provider")}>
+        <Select
+          value={provider.providerId}
+          aria-label={t("provider")}
+          onChange={(value) => {
+            const providerId = value as OfficialProviderId;
+            onChange({
+              ...provider,
+              providerId,
+              name: OFFICIAL_PROVIDER_LABELS[providerId],
+              authAccountId: undefined,
+              models: [],
+              defaultModelId: "",
+            });
+          }}
+          options={OFFICIAL_PROVIDER_IDS.map((providerId) => ({
+            value: providerId,
+            label: OFFICIAL_PROVIDER_LABELS[providerId],
+          }))}
+        />
+      </Field>
+      <div>
+        <span className="field-label">{t("authMode")}</span>
+        <div className="auth-cards" role="radiogroup" aria-label={t("authMode")}>
+          {authOptions.map((option) => (
+            <button
+              key={option.mode}
+              type="button"
+              role="radio"
+              aria-checked={provider.authMode === option.mode}
+              className={`auth-card ${provider.authMode === option.mode ? "sel" : ""}`}
+              onClick={() => onChange({ ...provider, authMode: option.mode })}
+            >
+              <span className="ac-top">
+                <span className="ac-radio" aria-hidden="true" />
+                <span className="ac-title">{option.title}</span>
+              </span>
+              <span className="ac-desc">{option.desc}</span>
+            </button>
+          ))}
+        </div>
       </div>
       {provider.authMode === "account" ? (
         <Field label={t("account")} error={fieldError(errors.authAccountId, t)} required>
           <div className="editor-grid grid grid-cols-[minmax(0,1fr)_auto] gap-2">
-            <select value={provider.authAccountId ?? ""} onChange={(event) => onChange({ ...provider, authAccountId: event.target.value })}>
-              <option value="">{t("selectAccount")}</option>
-              {providerAccounts.map((account) => (
-                <option key={account.id} value={account.id}>
-                  {accountOptionLabel(account, t)}
-                </option>
-              ))}
-            </select>
+            <Select
+              value={provider.authAccountId ?? ""}
+              aria-label={t("account")}
+              placeholder={t("selectAccount")}
+              onChange={(value) => onChange({ ...provider, authAccountId: value })}
+              options={[
+                { value: "", label: t("selectAccount") },
+                ...providerAccounts.map((account) => ({ value: account.id, label: accountOptionLabel(account, t) })),
+              ]}
+            />
             <button type="button" onClick={() => onManageAccounts(provider.providerId)}>
               {t("manageAccounts")}
             </button>
@@ -2039,10 +2471,15 @@ function ModelConfigForm({
         </Field>
         <ApiSelect value={draft.api ?? ""} onChange={(api) => updateModel({ ...draft, api })} label={t("apiType")} />
         <Field label={t("source")}>
-          <select value={draft.source ?? "custom"} onChange={(event) => updateModel({ ...draft, source: event.target.value as ModelConfig["source"] })}>
-            <option value="custom">{t("customModel")}</option>
-            <option value="builtin">{t("builtinModel")}</option>
-          </select>
+          <Select
+            value={draft.source ?? "custom"}
+            aria-label={t("source")}
+            onChange={(value) => updateModel({ ...draft, source: value as ModelConfig["source"] })}
+            options={[
+              { value: "custom", label: t("customModel") },
+              { value: "builtin", label: t("builtinModel") },
+            ]}
+          />
         </Field>
       </div>
       <div className="editor-grid grid grid-cols-2 gap-4">
@@ -2156,21 +2593,22 @@ function ThinkingLevelMapEditor({
         {THINKING_LEVELS.map((level) => (
           <div key={level} className="editor-grid grid grid-cols-[120px_150px_minmax(0,1fr)] gap-2">
             <span className="self-center model-id">{level}</span>
-            <select
+            <Select
               aria-label={`${level} mapping`}
               value={value?.[level] === undefined ? "default" : value[level] === null ? "unsupported" : "custom"}
-              onChange={(event) => {
+              onChange={(selected) => {
                 const next = { ...(value ?? {}) };
-                if (event.target.value === "default") delete next[level];
-                if (event.target.value === "unsupported") next[level] = null;
-                if (event.target.value === "custom") next[level] = "";
+                if (selected === "default") delete next[level];
+                if (selected === "unsupported") next[level] = null;
+                if (selected === "custom") next[level] = "";
                 onChange(next);
               }}
-            >
-              <option value="default">{t("defaultValue")}</option>
-              <option value="unsupported">{t("unsupported")}</option>
-              <option value="custom">{t("customValue")}</option>
-            </select>
+              options={[
+                { value: "default", label: t("defaultValue") },
+                { value: "unsupported", label: t("unsupported") },
+                { value: "custom", label: t("customValue") },
+              ]}
+            />
             <input
               aria-label={`${level} custom value`}
               value={typeof value?.[level] === "string" ? value[level] ?? "" : ""}
@@ -2211,20 +2649,30 @@ function CompatForm({ value, onChange, t }: { value: CompatConfig; onChange: (va
         </div>
         <div className="editor-grid grid grid-cols-3 gap-3">
           <LabeledField label={t("compatMaxTokensField")} field="maxTokensField" help={t("compatMaxTokensFieldHelp")}>
-            <select value={value.maxTokensField ?? ""} onChange={(event) => onChange({ ...value, maxTokensField: event.target.value as CompatConfig["maxTokensField"] })}>
-              <option value="">{t("defaultValue")}</option>
-              <option value="max_completion_tokens">max_completion_tokens</option>
-              <option value="max_tokens">max_tokens</option>
-            </select>
+            <Select
+              value={value.maxTokensField ?? ""}
+              aria-label={t("compatMaxTokensField")}
+              onChange={(selected) => onChange({ ...value, maxTokensField: selected as CompatConfig["maxTokensField"] })}
+              options={[
+                { value: "", label: t("defaultValue") },
+                { value: "max_completion_tokens", label: "max_completion_tokens" },
+                { value: "max_tokens", label: "max_tokens" },
+              ]}
+            />
           </LabeledField>
           <LabeledField label={t("compatThinkingFormat")} field="thinkingFormat" help={t("compatThinkingFormatHelp")}>
             <input value={value.thinkingFormat ?? ""} onChange={(event) => onChange({ ...value, thinkingFormat: event.target.value as CompatConfig["thinkingFormat"] })} />
           </LabeledField>
           <LabeledField label={t("compatCacheControlFormat")} field="cacheControlFormat" help={t("compatCacheControlFormatHelp")}>
-            <select value={value.cacheControlFormat ?? ""} onChange={(event) => onChange({ ...value, cacheControlFormat: event.target.value as CompatConfig["cacheControlFormat"] })}>
-              <option value="">{t("defaultValue")}</option>
-              <option value="anthropic">anthropic</option>
-            </select>
+            <Select
+              value={value.cacheControlFormat ?? ""}
+              aria-label={t("compatCacheControlFormat")}
+              onChange={(selected) => onChange({ ...value, cacheControlFormat: selected as CompatConfig["cacheControlFormat"] })}
+              options={[
+                { value: "", label: t("defaultValue") },
+                { value: "anthropic", label: "anthropic" },
+              ]}
+            />
           </LabeledField>
         </div>
         <RoutingForm value={value} onChange={onChange} t={t} />
@@ -2236,11 +2684,16 @@ function CompatForm({ value, onChange, t }: { value: CompatConfig; onChange: (va
 function TriStateBool({ label, field, help, value, onChange }: { label: string; field?: string; help?: string; value?: boolean; onChange: (value: boolean | undefined) => void }) {
   return (
     <LabeledField label={label} field={field} help={help}>
-      <select value={value === undefined ? "" : value ? "true" : "false"} onChange={(event) => onChange(event.target.value === "" ? undefined : event.target.value === "true")}>
-        <option value="">default</option>
-        <option value="true">true</option>
-        <option value="false">false</option>
-      </select>
+      <Select
+        value={value === undefined ? "" : value ? "true" : "false"}
+        aria-label={label}
+        onChange={(selected) => onChange(selected === "" ? undefined : selected === "true")}
+        options={[
+          { value: "", label: "default" },
+          { value: "true", label: "true" },
+          { value: "false", label: "false" },
+        ]}
+      />
     </LabeledField>
   );
 }
@@ -2259,11 +2712,16 @@ function RoutingForm({ value, onChange, t }: { value: CompatConfig; onChange: (v
           <TriStateBool label={t("routeZdr")} field="zdr" help={t("routeZdrHelp")} value={openRouterRouting.zdr} onChange={(zdr) => onChange({ ...value, openRouterRouting: { ...openRouterRouting, zdr } })} />
           <TriStateBool label={t("routeDistillable")} field="enforce_distillable_text" help={t("routeDistillableHelp")} value={openRouterRouting.enforceDistillableText} onChange={(enforceDistillableText) => onChange({ ...value, openRouterRouting: { ...openRouterRouting, enforceDistillableText } })} />
           <LabeledField label={t("routeDataCollection")} field="data_collection" help={t("routeDataCollectionHelp")}>
-            <select value={openRouterRouting.dataCollection ?? ""} onChange={(event) => onChange({ ...value, openRouterRouting: { ...openRouterRouting, dataCollection: event.target.value as "allow" | "deny" | "" } })}>
-              <option value="">{t("defaultValue")}</option>
-              <option value="allow">allow</option>
-              <option value="deny">deny</option>
-            </select>
+            <Select
+              value={openRouterRouting.dataCollection ?? ""}
+              aria-label={t("routeDataCollection")}
+              onChange={(selected) => onChange({ ...value, openRouterRouting: { ...openRouterRouting, dataCollection: selected as "allow" | "deny" | "" } })}
+              options={[
+                { value: "", label: t("defaultValue") },
+                { value: "allow", label: "allow" },
+                { value: "deny", label: "deny" },
+              ]}
+            />
           </LabeledField>
           <LabeledField label={t("routeSort")} field="sort.by" help={t("routeSortHelp")}>
             <input value={openRouterRouting.sortBy ?? ""} onChange={(event) => onChange({ ...value, openRouterRouting: { ...openRouterRouting, sortBy: event.target.value } })} />
