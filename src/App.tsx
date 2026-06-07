@@ -626,12 +626,10 @@ function App() {
       const result = await loginOfficialProviderOAuth(providerId, "");
       oauthInlineActiveRef.current = false;
       oauthCallbackSubmittedRef.current = false;
-      const applied = await applyAuthAccount(result.account.id);
       await refreshAccounts();
-      focusAccount(applied);
-      await bindActiveProviderToAccount(applied);
+      focusAccount(result.account);
       addAccountDialogRef.current?.close();
-      showToast("success", t("accountSavedAndApplied"));
+      showToast("success", t("accountSaved"));
     } catch (err) {
       if (isOAuthCanceledError(err)) {
         // canceled: stay silent
@@ -727,12 +725,11 @@ function App() {
         newAccountApiKey,
         selectedAddedProvider ? providerDefaultSnapshot(selectedAddedProvider) : undefined,
       );
-      const applied = await applyAuthAccount(account.id);
       await refreshAccounts();
-      focusAccount(applied);
+      focusAccount(account);
       setNewAccountApiKey("");
       addAccountDialogRef.current?.close();
-      showToast("success", t("accountSavedAndApplied"));
+      showToast("success", t("accountSaved"));
     } catch (err) {
       showError(err);
     } finally {
@@ -1518,8 +1515,8 @@ function AccountsPanel({
             <div className="list-head">
               <span>{t("accounts")}</span>
               <span>{t("provider")}</span>
-              <span>{t("activeInPi")}</span>
-              <span className="right">{t("authMode")}</span>
+              <span>{t("authMode")}</span>
+              <span className="right">{t("actions")}</span>
             </div>
             <div className="list">
               {sortedAccounts.map((account) => (
@@ -1732,20 +1729,12 @@ function AccountRow({
         <span className="pv-sub">{isOfficialProviderId(account.providerId) ? t("official") : t("custom")}</span>
       </div>
       <div className="cell-state">
-        {account.activeInPi ? (
-          <span className="badge-active">
-            <Check size={12} /> {t("activeInPi")}
-          </span>
-        ) : (
-          <span className={`tag ${auth === "OAuth" ? "oauth" : "apikey"}`}><span className="dot" />{auth}</span>
-        )}
+        <span className={`tag ${auth === "OAuth" ? "oauth" : "apikey"}`}><span className="dot" />{auth}</span>
       </div>
       <div className="cell-action" onClick={(event) => event.stopPropagation()}>
-        {!account.activeInPi ? (
-          <button type="button" className="apply-btn" onClick={() => onApply(account)} disabled={busy}>
-            <ArrowRight size={14} /> {t("applyAccount")}
-          </button>
-        ) : null}
+        <button type="button" className="apply-btn" onClick={() => onApply(account)} disabled={busy}>
+          <ArrowRight size={14} /> {t("applyAccount")}
+        </button>
         <Popover
           open={menuOpen}
           onOpenChange={setMenuOpen}
