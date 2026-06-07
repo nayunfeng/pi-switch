@@ -451,7 +451,7 @@ function App() {
   }
 
   function addProvider() {
-    const provider = createEmptyCustomProviderDraft();
+    const provider = createEmptyOfficialProviderDraft();
     setProviderValidation((state) => ({ ...state, [provider.id]: {} }));
     setProviderDraft(provider);
     setShowKey(false);
@@ -1988,22 +1988,26 @@ function ProvidersPanel({
                 <Field label={t("name")} error={fieldError(errors.name, t)} required>
                   <input value={activeProvider.name} onChange={(event) => onChangeProvider({ ...activeProvider, name: event.target.value }, "name")} />
                 </Field>
-                <Field label={t("kind")}>
-                  <Select
-                    value={activeProvider.kind}
-                    aria-label={t("kind")}
-                    onChange={(value) => {
-                      const replacement = value === "official"
-                        ? (isNewProviderDraft ? createEmptyOfficialProviderDraft() : createOfficialProvider())
-                        : (isNewProviderDraft ? createEmptyCustomProviderDraft() : createCustomProvider());
-                      onChangeProvider({ ...replacement, id: activeProvider.id, name: activeProvider.name }, "kind");
-                    }}
-                    options={[
-                      { value: "official", label: t("official") },
-                      { value: "custom", label: t("custom") },
-                    ]}
-                  />
-                </Field>
+                {isNewProviderDraft ? (
+                  <Field label={t("kind")}>
+                    <Select
+                      value={activeProvider.kind}
+                      aria-label={t("kind")}
+                      onChange={(value) => {
+                        const replacement = value === "official" ? createEmptyOfficialProviderDraft() : createEmptyCustomProviderDraft();
+                        onChangeProvider({ ...replacement, id: activeProvider.id, name: activeProvider.name }, "kind");
+                      }}
+                      options={[
+                        { value: "official", label: t("official") },
+                        { value: "custom", label: t("custom") },
+                      ]}
+                    />
+                  </Field>
+                ) : (
+                  <Field label={t("kind")}>
+                    <input value={activeProvider.kind === "official" ? t("official") : t("custom")} readOnly />
+                  </Field>
+                )}
               </div>
               {activeProvider.kind === "official" ? (
                 <OfficialProviderForm
