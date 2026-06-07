@@ -391,3 +391,59 @@ No `.trellis/spec` update needed: this was a frontend-only interaction cleanup w
 ### Next Steps
 
 - None - task complete
+
+
+## Session 12: 修复网页预览和账号供应商选择
+
+**Date**: 2026-06-08
+**Task**: 修复网页预览和账号供应商选择
+**Branch**: `master`
+
+### Summary
+
+修复网页刷新 Tauri event 崩溃，并让 API Key 添加账号从供应商面板已添加列表选择供应商。
+
+### Main Changes
+
+### Summary
+
+修复两个前端回归：普通网页刷新时不再无条件注册 Tauri event listener，避免 `transformCallback` 崩溃；添加账号的 API Key 来源改为可选择供应商面板中已添加的供应商。
+
+### Main Changes
+
+- 在 `commands.ts` 增加 `isTauriRuntime()` 和 `canListenToTauriEvents()`，命令和事件分别判断能力。
+- `App.tsx` 中 OAuth event listener 仅在具备 Tauri event callback 能力时注册。
+- OAuth 链接打开增加普通浏览器 `window.open` 兜底。
+- 添加账号 API Key 的第二个来源改为“已添加的供应商”，选项来自 `config.providers`。
+- 已添加供应商会带入供应商面板里的 Base URL 和 API Key 快照。
+- 在前端 quality spec 记录 Tauri event guard 约束。
+
+### Verification
+
+- `npm run build` passed.
+- `npm run test:auth` passed.
+- `git diff --check` passed with only CRLF warnings.
+
+### Git Commits
+
+- `1383c09` 修复网页预览和账号供应商选择
+- archive commit auto-created by Trellis task archive
+
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `1383c09` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
