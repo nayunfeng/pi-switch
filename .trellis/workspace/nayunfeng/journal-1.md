@@ -480,3 +480,36 @@ No `.trellis/spec` update needed: this was a frontend-only interaction cleanup w
 ### Next Steps
 
 - None - task complete
+
+
+## Session 14: 调整账号启用和新增行为
+
+**Date**: 2026-06-08
+**Task**: 调整账号启用和新增行为
+**Branch**: `master`
+
+### Summary
+
+账号新增改为只保存不自动应用；账号列表移除已应用列，新增可重复点击的启用操作；同步账号契约规范。验证通过 npm run build、npm run test:auth、git diff --check。
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `970f15f` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
