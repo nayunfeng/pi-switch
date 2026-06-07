@@ -71,3 +71,36 @@
 ### Next Steps
 
 - None - task complete
+
+
+## Session 3: 移除供应商直接应用到 Pi
+
+**Date**: 2026-06-07
+**Task**: 移除供应商直接应用到 Pi
+**Branch**: `master`
+
+### Summary
+
+移除供应商配置页的直接应用到 Pi 入口和对应 IPC command，保留账号应用与供应商测试流程；验证 npm build、Rust lib tests、auth script tests 通过。
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `3c0f784` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
