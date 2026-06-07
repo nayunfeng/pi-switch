@@ -8,7 +8,7 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 4
+- **Total Sessions**: 5
 - **Last Active**: 2026-06-07
 <!-- @@@/auto:current-status -->
 
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~139 | Active |
+| `journal-1.md` | ~172 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 5 | 2026-06-07 | Provider list drawer redesign | `26e7c62` | `master` |
 | 4 | 2026-06-07 | 移除添加账号 OAuth 冗余提示 | `f93b9ad` | `master` |
 | 3 | 2026-06-07 | 移除供应商直接应用到 Pi | `3c0f784` | `master` |
 | 2 | 2026-06-07 | 顶部标签工作台界面重构 | `84aa777` | `master` |

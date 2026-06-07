@@ -137,3 +137,36 @@
 ### Next Steps
 
 - None - task complete
+
+
+## Session 5: Provider list drawer redesign
+
+**Date**: 2026-06-07
+**Task**: Provider list drawer redesign
+**Branch**: `master`
+
+### Summary
+
+Redesigned provider management into row list plus right-side drawer, kept new providers as unsaved drafts until save, delayed required-field validation until touch/save/test, and documented the draft-state convention.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `26e7c62` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
