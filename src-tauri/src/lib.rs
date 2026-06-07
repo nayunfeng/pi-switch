@@ -1914,18 +1914,6 @@ fn import_pi_auth_account(input: ImportPiAuthAccountInput) -> AppResult<AuthAcco
 }
 
 #[tauri::command]
-fn apply_provider_to_pi(input: ApplyProviderInput) -> AppResult<()> {
-    let paths = resolve_paths()?;
-    fs::create_dir_all(&paths.pi_agent_dir).map_err(|err| {
-        AppError::new("PI_MODELS_WRITE_FAILED", "创建 Pi 配置目录失败")
-            .with_details(err.to_string())
-    })?;
-    let config = normalize_app_config(input.config);
-    apply_provider(&config, &input.provider_entry_id, &paths)?;
-    Ok(())
-}
-
-#[tauri::command]
 async fn test_provider(input: TestProviderInput) -> AppResult<TestProviderResult> {
     let paths = resolve_paths()?;
     fs::create_dir_all(&paths.pi_agent_dir).map_err(|err| {
@@ -3752,7 +3740,6 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             load_app_config,
             save_app_config,
-            apply_provider_to_pi,
             test_provider,
             fetch_custom_provider_models,
             list_pi_models,

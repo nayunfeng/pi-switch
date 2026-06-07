@@ -24,10 +24,6 @@ export async function saveAppConfig(config: AppConfig) {
   return tauriInvoke<void>("save_app_config", { input: { config } });
 }
 
-export async function applyProviderToPi(config: AppConfig, providerEntryId: string) {
-  return tauriInvoke<void>("apply_provider_to_pi", { input: { config, providerEntryId } });
-}
-
 export async function testProvider(config: AppConfig, providerEntryId: string) {
   return tauriInvoke<TestProviderResult>("test_provider", { input: { config, providerEntryId } });
 }

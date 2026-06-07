@@ -26,7 +26,6 @@ import {
 } from "lucide-react";
 import {
   applyAuthAccount,
-  applyProviderToPi,
   createApiKeyAccount,
   deleteAuthAccount,
   duplicateAuthAccount,
@@ -423,24 +422,6 @@ function App() {
     } catch (err) {
       showError(err);
       return false;
-    } finally {
-      setProviderBusy(false);
-    }
-  }
-
-  async function applyCurrentProvider() {
-    if (!activeProvider) return;
-    if (Object.keys(errors).length > 0) {
-      showToast("error", t("validationFailed"));
-      return;
-    }
-    setProviderBusy(true);
-    try {
-      await applyProviderToPi(config, activeProvider.id);
-      showToast("success", t("applySuccess"));
-      await refreshAccounts();
-    } catch (err) {
-      showError(err);
     } finally {
       setProviderBusy(false);
     }
@@ -987,7 +968,6 @@ function App() {
             onRemoveModel={removeModel}
             onUpdateDefaultModel={updateDefaultModel}
             onSave={() => saveCurrentConfig()}
-            onApply={applyCurrentProvider}
             onTest={testCurrentProvider}
             onViewOutput={() => outputDialogRef.current?.showModal()}
             t={t}
@@ -1776,7 +1756,6 @@ function ProvidersPanel({
   onRemoveModel,
   onUpdateDefaultModel,
   onSave,
-  onApply,
   onTest,
   onViewOutput,
   t,
@@ -1819,7 +1798,6 @@ function ProvidersPanel({
   onRemoveModel: (model: ModelConfig) => void;
   onUpdateDefaultModel: (defaultModelId: string) => void;
   onSave: () => void;
-  onApply: () => void;
   onTest: () => void;
   onViewOutput: () => void;
   t: ReturnType<typeof createTranslator>;
@@ -2018,9 +1996,6 @@ function ProvidersPanel({
                 <div className="right">
                   <button type="button" className="btn" onClick={onSave} disabled={providerBusy}>
                     <Save size={15} /> {t("save")}
-                  </button>
-                  <button type="button" className="btn primary" onClick={onApply} disabled={providerBusy}>
-                    <Check size={15} /> {t("apply")}
                   </button>
                 </div>
               </div>
