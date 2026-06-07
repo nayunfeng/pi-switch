@@ -104,3 +104,36 @@
 ### Next Steps
 
 - None - task complete
+
+
+## Session 4: 移除添加账号 OAuth 冗余提示
+
+**Date**: 2026-06-07
+**Task**: 移除添加账号 OAuth 冗余提示
+**Branch**: `master`
+
+### Summary
+
+删除添加账号 OAuth 区的冗余说明文案，过滤 started/auth/manualCode 等低价值 OAuth 事件行，并移除后端 started 事件；验证 npm build、Rust lib tests、auth script tests 通过。
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `f93b9ad` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
