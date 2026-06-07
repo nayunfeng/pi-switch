@@ -46,7 +46,6 @@ import {
   AppConfig,
   AppError,
   AuthAccount,
-  AuthMode,
   CompatConfig,
   createCustomProvider,
   createModel,
@@ -168,6 +167,10 @@ function officialProviderAdvancedForSelection(provider: Extract<Provider, { kind
     baseUrl: canAutoSetBaseUrl ? nextBaseUrl : current.baseUrl,
     api: canAutoSetApi ? nextApi : current.api,
   };
+}
+
+function officialProviderWithApiKeyAuth(provider: Extract<Provider, { kind: "official" }>): Extract<Provider, { kind: "official" }> {
+  return { ...provider, authMode: "apiKey", authAccountId: undefined };
 }
 
 function App() {
@@ -447,14 +450,6 @@ function App() {
     setProviderDraft(undefined);
   }
 
-  function manageAccountsForProvider(providerId: OfficialProviderId) {
-    setNewOAuthProviderId(providerId);
-    setNewApiKeyOfficialProviderId(providerId);
-    setAccountProviderFilter(providerId);
-    closeProviderDrawer();
-    setActiveTab("accounts");
-  }
-
   function focusAccount(account: AuthAccount) {
     setAccountProviderFilter(account.providerId);
     if (isOfficialProviderId(account.providerId)) {
@@ -533,24 +528,30 @@ function App() {
   async function saveCurrentConfig(nextConfig = config, providerEntryId = nextConfig.activeProviderId) {
     const draftToSave = providerDraft?.id === providerEntryId ? providerDraft : undefined;
     const provider = draftToSave ?? nextConfig.providers.find((item) => item.id === providerEntryId);
+    const providerForSave = provider?.kind === "official" ? officialProviderWithApiKeyAuth(provider) : provider;
     if (provider) markProviderAttempted(provider.id);
-    if (Object.keys(validationErrors(provider)).length > 0) {
+    if (Object.keys(validationErrors(providerForSave)).length > 0) {
       showToast("error", t("validationFailed"));
       return undefined;
     }
     const configToSave =
-      draftToSave
+      draftToSave && providerForSave
         ? {
             ...nextConfig,
-            activeProviderId: draftToSave.id,
-            providers: [...nextConfig.providers, draftToSave],
+            activeProviderId: providerForSave.id,
+            providers: [...nextConfig.providers, providerForSave],
           }
+        : providerForSave && providerForSave !== provider
+          ? {
+              ...nextConfig,
+              providers: nextConfig.providers.map((item) => (item.id === providerForSave.id ? providerForSave : item)),
+            }
         : nextConfig;
     setProviderBusy(true);
     try {
       await saveAppConfig(configToSave);
+      updateConfig(configToSave);
       if (draftToSave) {
-        updateConfig(configToSave);
         setProviderDraft(undefined);
       }
       showToast("success", t("saveSuccess"));
@@ -600,32 +601,6 @@ function App() {
       showError(err);
     } finally {
       setPiModelsLoading(false);
-    }
-  }
-
-  async function loginOAuthProvider(provider: Extract<Provider, { kind: "official" }>) {
-    if (oauthRunningRef.current) return;
-    oauthRunningRef.current = true;
-    openedOAuthUrlsRef.current.clear();
-    setOAuthState({ providerId: provider.providerId, running: true, events: [] });
-    try {
-      const result = await loginOfficialProviderOAuth(provider.providerId);
-      await refreshAccounts();
-      const nextProvider = { ...provider, authMode: "account" as const, authAccountId: result.account.id };
-      const nextConfig = {
-        ...config,
-        providers: config.providers.map((item) => (item.id === provider.id ? nextProvider : item)),
-      };
-      updateConfig(nextConfig);
-      await saveAppConfig(nextConfig);
-      await applyAuthAccount(result.account.id);
-      await refreshAccounts();
-      showToast("success", t("oauthLoginSuccess"));
-    } catch (err) {
-      showError(err);
-    } finally {
-      oauthRunningRef.current = false;
-      setOAuthState((state) => ({ ...state, running: false }));
     }
   }
 
@@ -744,33 +719,6 @@ function App() {
       setNewAccountApiKey("");
       addAccountDialogRef.current?.close();
       showToast("success", t("accountSavedAndApplied"));
-    } catch (err) {
-      showError(err);
-    } finally {
-      setAccountBusy(false);
-    }
-  }
-
-  async function saveProviderApiKeyAsAccount(provider: Extract<Provider, { kind: "official" }>) {
-    if (!provider.apiKey.trim()) {
-      showToast("error", t("required"));
-      return;
-    }
-    setAccountBusy(true);
-    try {
-      const label = `${provider.name || OFFICIAL_PROVIDER_LABELS[provider.providerId]} API Key`;
-      const account = await createApiKeyAccount(provider.providerId, label, provider.advanced?.baseUrl ?? officialProviderBaseUrl(provider.providerId), provider.apiKey);
-      await refreshAccounts();
-      const nextProvider = { ...provider, authMode: "account" as const, authAccountId: account.id, apiKey: "" };
-      const nextConfig = {
-        ...config,
-        providers: config.providers.map((item) => (item.id === provider.id ? nextProvider : item)),
-      };
-      updateConfig(nextConfig);
-      await saveAppConfig(nextConfig);
-      await applyAuthAccount(account.id);
-      await refreshAccounts();
-      showToast("success", t("providerApiKeySavedAsAccount"));
     } catch (err) {
       showError(err);
     } finally {
@@ -1074,7 +1022,6 @@ function App() {
             showKey={showKey}
             setShowKey={setShowKey}
             providerBusy={providerBusy}
-            accountBusy={accountBusy}
             piModels={piModels}
             piModelsLoading={piModelsLoading}
             piModelSearch={piModelSearch}
@@ -1082,7 +1029,6 @@ function App() {
             selectedCandidates={selectedCandidates}
             modelSearch={modelSearch}
             fetching={fetching}
-            oauthState={oauthState}
             testState={testState}
             drawerOpen={providerDrawerOpen}
             onSelectProvider={selectProvider}
@@ -1092,9 +1038,6 @@ function App() {
             onChangeProvider={updateActiveProviderField}
             onOpenDelete={() => deleteDialogRef.current?.showModal()}
             onOpenAdvanced={() => providerAdvancedDialogRef.current?.showModal()}
-            onLoginOAuth={loginOAuthProvider}
-            onSaveApiKeyAsAccount={saveProviderApiKeyAsAccount}
-            onManageAccounts={manageAccountsForProvider}
             onRefreshPiModels={refreshPiModels}
             onPiModelSearch={setPiModelSearch}
             onToggleOfficialModel={toggleOfficialModel}
@@ -1888,7 +1831,6 @@ function ProvidersPanel({
   showKey,
   setShowKey,
   providerBusy,
-  accountBusy,
   piModels,
   piModelsLoading,
   piModelSearch,
@@ -1896,7 +1838,6 @@ function ProvidersPanel({
   selectedCandidates,
   modelSearch,
   fetching,
-  oauthState,
   testState,
   drawerOpen,
   onSelectProvider,
@@ -1906,9 +1847,6 @@ function ProvidersPanel({
   onChangeProvider,
   onOpenDelete,
   onOpenAdvanced,
-  onLoginOAuth,
-  onSaveApiKeyAsAccount,
-  onManageAccounts,
   onRefreshPiModels,
   onPiModelSearch,
   onToggleOfficialModel,
@@ -1932,7 +1870,6 @@ function ProvidersPanel({
   showKey: boolean;
   setShowKey: (show: boolean) => void;
   providerBusy: boolean;
-  accountBusy: boolean;
   piModels: PiModelInfo[];
   piModelsLoading: boolean;
   piModelSearch: string;
@@ -1940,7 +1877,6 @@ function ProvidersPanel({
   selectedCandidates: Set<string>;
   modelSearch: string;
   fetching: boolean;
-  oauthState: OAuthState;
   testState: TestState;
   drawerOpen: boolean;
   onSelectProvider: (id: string) => void;
@@ -1950,9 +1886,6 @@ function ProvidersPanel({
   onChangeProvider: (provider: Provider, field: string) => void;
   onOpenDelete: () => void;
   onOpenAdvanced: () => void;
-  onLoginOAuth: (provider: Extract<Provider, { kind: "official" }>) => void;
-  onSaveApiKeyAsAccount: (provider: Extract<Provider, { kind: "official" }>) => void;
-  onManageAccounts: (providerId: OfficialProviderId) => void;
   onRefreshPiModels: () => void;
   onPiModelSearch: (value: string) => void;
   onToggleOfficialModel: (modelId: string, checked: boolean) => void;
@@ -1995,7 +1928,7 @@ function ProvidersPanel({
           <span className="truncate">{provider.name}</span>
           {isApplied(provider) ? <span className="badge-active"><Check size={12} /> {t("activeInPi")}</span> : null}
         </span>
-        <span className="pt">{providerSummary(provider, accounts, t)}</span>
+        <span className="pt">{providerSummary(provider, t)}</span>
       </span>
       <span className="prov-kind">{provider.kind === "official" ? t("official") : t("custom")}</span>
       <span className="prov-model">{provider.defaultModelId || t("noDefaultModel")}</span>
@@ -2065,12 +1998,6 @@ function ProvidersPanel({
                   showKey={showKey}
                   setShowKey={setShowKey}
                   onOpenAdvanced={onOpenAdvanced}
-                  onLoginOAuth={onLoginOAuth}
-                  onSaveApiKeyAsAccount={onSaveApiKeyAsAccount}
-                  onManageAccounts={onManageAccounts}
-                  oauthState={oauthState}
-                  accounts={accounts}
-                  busy={accountBusy}
                   t={t}
                 />
               ) : (
@@ -2232,17 +2159,11 @@ function ProvidersPanel({
   );
 }
 
-function providerSummary(provider: Provider, accounts: AuthAccount[], t: ReturnType<typeof createTranslator>) {
+function providerSummary(provider: Provider, t: ReturnType<typeof createTranslator>) {
   if (provider.kind === "custom") {
     return provider.baseUrl || provider.api || t("custom");
   }
-  if (provider.authMode === "account") {
-    const account = accounts.find((item) => item.id === provider.authAccountId);
-    const accountPart = account ? `${t("authAccount")} · ${account.label}` : t("authAccount");
-    return provider.defaultModelId ? `${accountPart} · ${provider.defaultModelId}` : accountPart;
-  }
-  if (provider.authMode === "apiKey") return t("authApiKey");
-  return provider.defaultModelId ? `${t("authExisting")} · ${provider.defaultModelId}` : t("authExisting");
+  return provider.defaultModelId ? `${t("apiKey")} · ${provider.defaultModelId}` : t("apiKey");
 }
 
 function OfficialProviderForm({
@@ -2253,12 +2174,6 @@ function OfficialProviderForm({
   showKey,
   setShowKey,
   onOpenAdvanced,
-  onLoginOAuth,
-  onSaveApiKeyAsAccount,
-  onManageAccounts,
-  oauthState,
-  accounts,
-  busy,
   t,
 }: {
   provider: Extract<Provider, { kind: "official" }>;
@@ -2268,23 +2183,8 @@ function OfficialProviderForm({
   showKey: boolean;
   setShowKey: (show: boolean) => void;
   onOpenAdvanced: () => void;
-  onLoginOAuth: (provider: Extract<Provider, { kind: "official" }>) => void;
-  onSaveApiKeyAsAccount: (provider: Extract<Provider, { kind: "official" }>) => void;
-  onManageAccounts: (providerId: OfficialProviderId) => void;
-  oauthState: OAuthState;
-  accounts: AuthAccount[];
-  busy: boolean;
   t: ReturnType<typeof createTranslator>;
 }) {
-  const oauthSupported = supportsOAuthLogin(provider.providerId);
-  const oauthRunning = oauthState.running && oauthState.providerId === provider.providerId;
-  const oauthDisabled = oauthState.running || busy;
-  const providerAccounts = accounts.filter((account) => account.providerId === provider.providerId);
-  const authOptions: { mode: AuthMode; title: string; desc: string }[] = [
-    { mode: "existing", title: t("authExisting"), desc: t("oauthLoginHelp") },
-    { mode: "account", title: t("authAccount"), desc: t("saveApiKeyAsAccountHelp") },
-    { mode: "apiKey", title: t("authApiKey"), desc: t("providerApiKeyOverrideHelp") },
-  ];
   return (
     <div className="grid gap-4">
       <Field label={t("provider")}>
@@ -2298,7 +2198,7 @@ function OfficialProviderForm({
               providerId,
               advanced: isNewDraft ? officialProviderAdvancedForSelection(provider, providerId) : provider.advanced,
               authAccountId: undefined,
-              authMode: isNewDraft ? "apiKey" : provider.authMode,
+              authMode: "apiKey",
               models: [],
               defaultModelId: "",
             }, "models");
@@ -2322,73 +2222,7 @@ function OfficialProviderForm({
           t={t}
         />
       ) : null}
-      {isNewDraft ? null : (
-        <div>
-          <span className="field-label">{t("authMode")}</span>
-          <div className="auth-cards" role="radiogroup" aria-label={t("authMode")}>
-            {authOptions.map((option) => (
-              <button
-                key={option.mode}
-                type="button"
-                role="radio"
-                aria-checked={provider.authMode === option.mode}
-                className={`auth-card ${provider.authMode === option.mode ? "sel" : ""}`}
-                onClick={() => onChange({ ...provider, authMode: option.mode }, option.mode === "apiKey" ? "apiKey" : option.mode === "account" ? "authAccountId" : "authMode")}
-              >
-                <span className="ac-top">
-                  <span className="ac-radio" aria-hidden="true" />
-                  <span className="ac-title">{option.title}</span>
-                </span>
-                <span className="ac-desc">{option.desc}</span>
-              </button>
-            ))}
-          </div>
-        </div>
-      )}
-      {provider.authMode === "account" ? (
-        <Field label={t("account")} error={fieldError(errors.authAccountId, t)} required>
-          <div className="editor-grid grid grid-cols-[minmax(0,1fr)_auto] gap-2">
-            <Select
-              value={provider.authAccountId ?? ""}
-              aria-label={t("account")}
-              placeholder={t("selectAccount")}
-              onChange={(value) => onChange({ ...provider, authAccountId: value }, "authAccountId")}
-              options={[
-                { value: "", label: t("selectAccount") },
-                ...providerAccounts.map((account) => ({ value: account.id, label: accountOptionLabel(account, t) })),
-              ]}
-            />
-            <button type="button" onClick={() => onManageAccounts(provider.providerId)}>
-              {t("manageAccounts")}
-            </button>
-          </div>
-        </Field>
-      ) : null}
-      {provider.authMode === "apiKey" && !isNewDraft ? (
-        <div className="grid gap-2">
-          <SecretField value={provider.apiKey} onChange={(apiKey) => onChange({ ...provider, apiKey }, "apiKey")} showKey={showKey} setShowKey={setShowKey} error={fieldError(errors.apiKey, t)} required t={t} />
-          <div className="flex flex-wrap items-center gap-2">
-            <button type="button" onClick={() => onSaveApiKeyAsAccount(provider)} disabled={busy || !provider.apiKey.trim()}>
-              {t("saveApiKeyAsAccount")}
-            </button>
-            <span className="muted">{t("saveApiKeyAsAccountHelp")}</span>
-          </div>
-        </div>
-      ) : null}
-      {oauthSupported ? (
-        <section className="grid gap-2 rounded-md border p-3" style={{ borderColor: "var(--border)", background: "var(--surface)" }}>
-          <div className="flex flex-wrap items-center justify-between gap-2">
-            <div>
-              <strong className="text-sm">{t("oauthLogin")}</strong>
-              <div className="muted">{t("oauthLoginHelp")}</div>
-            </div>
-            <button type="button" onClick={() => onLoginOAuth(provider)} disabled={oauthDisabled}>
-              {oauthRunning ? t("running") : t("oauthLogin")}
-            </button>
-          </div>
-          {oauthState.providerId === provider.providerId && oauthState.events.length > 0 ? <OAuthEventList events={oauthState.events} t={t} /> : null}
-        </section>
-      ) : null}
+      {isNewDraft ? null : <SecretField value={provider.apiKey} onChange={(apiKey) => onChange({ ...provider, authMode: "apiKey", authAccountId: undefined, apiKey }, "apiKey")} showKey={showKey} setShowKey={setShowKey} error={fieldError(errors.apiKey, t)} required t={t} />}
       <AdvancedButton onClick={onOpenAdvanced} label={t("providerAdvanced")} help={t("providerAdvancedHelp")} />
     </div>
   );
@@ -3055,17 +2889,6 @@ function accountIdentityText(account: AuthAccount) {
     .sort((left, right) => accountIdentityRank(left.field) - accountIdentityRank(right.field))
     .slice(0, 3)
     .map((item) => `${accountIdentityLabel(item.field)}: ${item.value}`)
-    .join(" / ");
-}
-
-function accountOptionLabel(account: AuthAccount, t: ReturnType<typeof createTranslator>) {
-  return [
-    account.label,
-    accountIdentityText(account),
-    account.kind === "oauth" ? "OAuth" : "API Key",
-    account.activeInPi ? t("activeInPi") : t("saved"),
-  ]
-    .filter(Boolean)
     .join(" / ");
 }
 
