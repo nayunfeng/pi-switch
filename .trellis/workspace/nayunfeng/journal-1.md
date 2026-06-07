@@ -269,3 +269,36 @@ Moved official provider advanced baseUrl, api type, and provider API key overrid
 ### Next Steps
 
 - None - task complete
+
+
+## Session 9: Provider official draft advanced basics
+
+**Date**: 2026-06-08
+**Task**: Provider official draft advanced basics
+**Branch**: `master`
+
+### Summary
+
+新增官方供应商主体表单内联 Base URL、API 类型和 API Key，按官方供应商联动默认 API 类型，并避免高级配置弹窗重复显示基础字段。
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `d77c054` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
