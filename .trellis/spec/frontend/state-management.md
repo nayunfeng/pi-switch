@@ -22,9 +22,20 @@ Questions to answer:
 
 ## State Categories
 
-<!-- Local state, global state, server state, URL state -->
+### Draft UI state
 
-(To be filled by the team)
+Use local component state for unsaved entities that should not be visible in persisted collections yet.
+
+For provider creation, `providerDraft` represents the drawer editor state before the user saves. Do not append a newly created provider to `config.providers` until validation passes and `saveAppConfig` succeeds.
+
+```typescript
+const draftToSave = providerDraft?.id === providerEntryId ? providerDraft : undefined;
+const configToSave = draftToSave
+  ? { ...config, activeProviderId: draftToSave.id, providers: [...config.providers, draftToSave] }
+  : config;
+```
+
+This prevents list rows, batch actions, and row-level tests from treating an unsaved draft as an existing provider.
 
 ---
 
@@ -46,6 +57,10 @@ Questions to answer:
 
 ## Common Mistakes
 
-<!-- State management mistakes your team has made -->
+### Adding unsaved entities directly to persisted arrays
 
-(To be filled by the team)
+**Symptom**: Clicking "New provider" immediately creates a row in the provider list before the user saves.
+
+**Cause**: The create action mutates `config.providers`, so the UI treats the draft as persisted.
+
+**Fix**: Keep the new entity in draft state, open the editor drawer, and write it into the persisted array only after save/test validation passes.

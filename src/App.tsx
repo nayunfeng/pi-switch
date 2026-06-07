@@ -90,6 +90,7 @@ type MainTab = "providers" | "accounts";
 type AccountProviderFilter = "all" | string;
 type AddAccountMode = "oauth" | "apiKey";
 type ApiKeyProviderSource = "official" | "custom";
+type ProviderValidationState = Record<string, { attempted?: boolean; touched?: Record<string, boolean> }>;
 
 type ModelDraft = {
   model: ModelConfig;
@@ -165,6 +166,9 @@ function App() {
   const [oauthManualCodeState, setOAuthManualCodeState] = useState<{ loginId: string; message: string }>();
   const [oauthManualCodeInput, setOAuthManualCodeInput] = useState("");
   const [providerBusy, setProviderBusy] = useState(false);
+  const [providerDrawerOpen, setProviderDrawerOpen] = useState(false);
+  const [providerDraft, setProviderDraft] = useState<Provider>();
+  const [providerValidation, setProviderValidation] = useState<ProviderValidationState>({});
   const openedOAuthUrlsRef = useRef<Set<string>>(new Set());
   const oauthInlineActiveRef = useRef(false);
   const oauthInlineLoginIdRef = useRef<string | undefined>(undefined);
@@ -176,7 +180,8 @@ function App() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const language = config.language ?? systemLanguage();
   const t = useMemo(() => createTranslator(language), [language]);
-  const activeProvider = config.providers.find((provider) => provider.id === config.activeProviderId);
+  const persistedActiveProvider = config.providers.find((provider) => provider.id === config.activeProviderId);
+  const activeProvider = providerDraft ?? persistedActiveProvider;
   const filteredAccounts = useMemo(
     () =>
       (accountProviderFilter === "all" ? accounts : accounts.filter((account) => account.providerId === accountProviderFilter))
@@ -186,7 +191,7 @@ function App() {
   );
   const customProviderOptions = useMemo(() => config.providers.filter((provider): provider is Extract<Provider, { kind: "custom" }> => provider.kind === "custom"), [config.providers]);
   const selectedAccount = filteredAccounts.find((account) => account.id === selectedAccountId) ?? filteredAccounts[0];
-  const errors = validationErrors(activeProvider);
+  const errors = visibleProviderErrors(activeProvider, providerValidation);
 
   useEffect(() => {
     loadAppConfig()
@@ -296,6 +301,17 @@ function App() {
     return () => media.removeEventListener("change", applyTheme);
   }, [config.theme]);
 
+  useEffect(() => {
+    if (!providerDrawerOpen) return;
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape" && !document.querySelector("dialog[open]")) {
+        closeProviderDrawer();
+      }
+    };
+    window.addEventListener("keydown", closeOnEscape);
+    return () => window.removeEventListener("keydown", closeOnEscape);
+  }, [providerDrawerOpen]);
+
   function updateConfig(next: AppConfig) {
     setConfig(normalizeConfig(next));
   }
@@ -333,16 +349,61 @@ function App() {
   }
 
   function updateActiveProvider(provider: Provider) {
+    if (providerDraft?.id === provider.id) {
+      setProviderDraft(provider);
+      return;
+    }
     updateConfig({
       ...config,
       providers: config.providers.map((item) => (item.id === provider.id ? provider : item)),
     });
   }
 
+  function markProviderField(providerId: string, field: string) {
+    setProviderValidation((state) => ({
+      ...state,
+      [providerId]: {
+        ...state[providerId],
+        touched: {
+          ...state[providerId]?.touched,
+          [field]: true,
+        },
+      },
+    }));
+  }
+
+  function markProviderAttempted(providerId: string) {
+    setProviderValidation((state) => ({
+      ...state,
+      [providerId]: {
+        ...state[providerId],
+        attempted: true,
+      },
+    }));
+  }
+
+  function updateActiveProviderField(provider: Provider, field: string) {
+    markProviderField(provider.id, field);
+    updateActiveProvider(provider);
+  }
+
+  function selectProvider(providerId: string) {
+    setProviderDraft(undefined);
+    updateConfig({ ...config, activeProviderId: providerId });
+    setShowKey(false);
+    setProviderDrawerOpen(true);
+  }
+
+  function closeProviderDrawer() {
+    setProviderDrawerOpen(false);
+    setProviderDraft(undefined);
+  }
+
   function manageAccountsForProvider(providerId: OfficialProviderId) {
     setNewOAuthProviderId(providerId);
     setNewApiKeyOfficialProviderId(providerId);
     setAccountProviderFilter(providerId);
+    closeProviderDrawer();
     setActiveTab("accounts");
   }
 
@@ -383,12 +444,10 @@ function App() {
 
   function addProvider() {
     const provider = createCustomProvider();
-    updateConfig({
-      ...config,
-      activeProviderId: provider.id,
-      providers: [...config.providers, provider],
-    });
+    setProviderValidation((state) => ({ ...state, [provider.id]: {} }));
+    setProviderDraft(provider);
     setShowKey(false);
+    setProviderDrawerOpen(true);
   }
 
   function duplicateProvider() {
@@ -398,43 +457,73 @@ function App() {
       id: `provider_${crypto.getRandomValues(new Uint32Array(1))[0].toString(16).padStart(6, "0").slice(0, 6)}`,
       name: `${activeProvider.name} Copy`,
     };
-    updateConfig({ ...config, activeProviderId: clone.id, providers: [...config.providers, clone] });
+    setProviderValidation((state) => ({ ...state, [clone.id]: {} }));
+    setProviderDraft(clone);
+    setShowKey(false);
+    setProviderDrawerOpen(true);
   }
 
   function deleteProvider() {
     if (!activeProvider) return;
+    if (providerDraft?.id === activeProvider.id) {
+      setProviderDraft(undefined);
+      closeProviderDrawer();
+      deleteDialogRef.current?.close();
+      return;
+    }
     const providers = config.providers.filter((provider) => provider.id !== activeProvider.id);
+    setProviderValidation((state) => {
+      const next = { ...state };
+      delete next[activeProvider.id];
+      return next;
+    });
     updateConfig({ ...config, activeProviderId: providers[0]?.id, providers });
+    closeProviderDrawer();
     deleteDialogRef.current?.close();
   }
 
-  async function saveCurrentConfig(nextConfig = config) {
-    const provider = nextConfig.providers.find((item) => item.id === nextConfig.activeProviderId);
+  async function saveCurrentConfig(nextConfig = config, providerEntryId = nextConfig.activeProviderId) {
+    const draftToSave = providerDraft?.id === providerEntryId ? providerDraft : undefined;
+    const provider = draftToSave ?? nextConfig.providers.find((item) => item.id === providerEntryId);
+    if (provider) markProviderAttempted(provider.id);
     if (Object.keys(validationErrors(provider)).length > 0) {
       showToast("error", t("validationFailed"));
-      return false;
+      return undefined;
     }
+    const configToSave =
+      draftToSave
+        ? {
+            ...nextConfig,
+            activeProviderId: draftToSave.id,
+            providers: [...nextConfig.providers, draftToSave],
+          }
+        : nextConfig;
     setProviderBusy(true);
     try {
-      await saveAppConfig(nextConfig);
+      await saveAppConfig(configToSave);
+      if (draftToSave) {
+        updateConfig(configToSave);
+        setProviderDraft(undefined);
+      }
       showToast("success", t("saveSuccess"));
-      return true;
+      return configToSave;
     } catch (err) {
       showError(err);
-      return false;
+      return undefined;
     } finally {
       setProviderBusy(false);
     }
   }
 
-  async function testCurrentProvider() {
-    if (!activeProvider) return;
-    const saved = await saveCurrentConfig();
-    if (!saved) return;
+  async function testCurrentProvider(providerEntryId = activeProvider?.id) {
+    if (!providerEntryId) return;
+    const savedConfig = await saveCurrentConfig(config, providerEntryId);
+    if (!savedConfig) return;
+    updateConfig({ ...savedConfig, activeProviderId: providerEntryId });
     setProviderBusy(true);
     setTestState({ status: "running", output: 'pi -p "ping"\n' });
     try {
-      const result = await runTestProvider(config, activeProvider.id);
+      const result = await runTestProvider(savedConfig, providerEntryId);
       const status = result.status;
       const exitLine = result.exitCode === undefined ? "" : `exitCode: ${result.exitCode}\n`;
       setTestState({
@@ -749,7 +838,7 @@ function App() {
       .map((id) => id.trim())
       .filter((id) => id && !existing.has(id))
       .map((id) => createModel(id));
-    updateActiveProvider(withValidDefaultModel({ ...activeProvider, models: [...activeProvider.models, ...additions] }));
+    updateActiveProviderField(withValidDefaultModel({ ...activeProvider, models: [...activeProvider.models, ...additions] }), "models");
     setSelectedCandidates(new Set());
   }
 
@@ -773,13 +862,13 @@ function App() {
       modelDraft.index === undefined
         ? [...activeProvider.models, model]
         : activeProvider.models.map((item, index) => (index === modelDraft.index ? model : item));
-    updateActiveProvider(withValidDefaultModel({ ...activeProvider, models, defaultModelId: activeProvider.defaultModelId || model.id }));
+    updateActiveProviderField(withValidDefaultModel({ ...activeProvider, models, defaultModelId: activeProvider.defaultModelId || model.id }), "models");
     modelDialogRef.current?.close();
   }
 
   function removeModel(model: ModelConfig) {
     if (!activeProvider) return;
-    updateActiveProvider(withValidDefaultModel({ ...activeProvider, models: activeProvider.models.filter((item) => item.id !== model.id) }));
+    updateActiveProviderField(withValidDefaultModel({ ...activeProvider, models: activeProvider.models.filter((item) => item.id !== model.id) }), "models");
   }
 
   function toggleOfficialModel(modelId: string, checked: boolean) {
@@ -787,12 +876,12 @@ function App() {
     const models = checked
       ? [...activeProvider.models, { ...createModel(modelId), source: "builtin" as const }]
       : activeProvider.models.filter((model) => model.id !== modelId);
-    updateActiveProvider(withValidDefaultModel({ ...activeProvider, models, defaultModelId: activeProvider.defaultModelId || modelId }));
+    updateActiveProviderField(withValidDefaultModel({ ...activeProvider, models, defaultModelId: activeProvider.defaultModelId || modelId }), "models");
   }
 
   function updateDefaultModel(defaultModelId: string) {
     if (!activeProvider) return;
-    updateActiveProvider({ ...activeProvider, defaultModelId });
+    updateActiveProviderField({ ...activeProvider, defaultModelId }, "models");
   }
 
   if (loading) {
@@ -820,7 +909,7 @@ function App() {
         </div>
 
         <nav className="nav" role="tablist" aria-label={t("title")}>
-          <button type="button" className="nav-tab" role="tab" aria-selected={activeTab === "accounts"} onClick={() => setActiveTab("accounts")}>
+          <button type="button" className="nav-tab" role="tab" aria-selected={activeTab === "accounts"} onClick={() => { closeProviderDrawer(); setActiveTab("accounts"); }}>
             <Users size={16} aria-hidden="true" />
             {t("accounts")}
             <span className="count">{accounts.length}</span>
@@ -947,10 +1036,12 @@ function App() {
             fetching={fetching}
             oauthState={oauthState}
             testState={testState}
-            onSelectProvider={(id) => { updateConfig({ ...config, activeProviderId: id }); setShowKey(false); }}
+            drawerOpen={providerDrawerOpen}
+            onSelectProvider={selectProvider}
+            onCloseDrawer={closeProviderDrawer}
             onAddProvider={addProvider}
             onDuplicateProvider={duplicateProvider}
-            onChangeProvider={updateActiveProvider}
+            onChangeProvider={updateActiveProviderField}
             onOpenDelete={() => deleteDialogRef.current?.showModal()}
             onOpenAdvanced={() => providerAdvancedDialogRef.current?.showModal()}
             onLoginOAuth={loginOAuthProvider}
@@ -967,8 +1058,13 @@ function App() {
             onEditModel={openEditModelDialog}
             onRemoveModel={removeModel}
             onUpdateDefaultModel={updateDefaultModel}
-            onSave={() => saveCurrentConfig()}
-            onTest={testCurrentProvider}
+            onSave={() => saveCurrentConfig(config, activeProvider?.id)}
+            onTest={(providerEntryId) => {
+              if (providerEntryId) {
+                selectProvider(providerEntryId);
+              }
+              testCurrentProvider(providerEntryId ?? activeProvider?.id);
+            }}
             onViewOutput={() => outputDialogRef.current?.showModal()}
             t={t}
           />
@@ -1032,13 +1128,13 @@ function App() {
         </button>
         <h3 id="advanced-dialog-title" className="m-0 mb-4 text-base font-semibold">{t("providerAdvanced")}</h3>
         {activeProvider?.kind === "official" ? (
-          <ProviderAdvancedForm value={activeProvider.advanced ?? {}} onChange={(advanced) => updateActiveProvider({ ...activeProvider, advanced })} errors={errors} t={t} />
+          <ProviderAdvancedForm value={activeProvider.advanced ?? {}} onChange={(advanced) => updateActiveProviderField({ ...activeProvider, advanced }, "headers")} errors={errors} t={t} />
         ) : null}
         {activeProvider?.kind === "custom" ? (
           <div className="grid gap-4">
-            <Checkbox checked={activeProvider.authHeader ?? false} onChange={(authHeader) => updateActiveProvider({ ...activeProvider, authHeader })} label={t("authHeader")} help={t("authHeaderHelp")} />
-            <HeadersEditor value={activeProvider.headers ?? []} onChange={(headers) => updateActiveProvider({ ...activeProvider, headers })} t={t} />
-            <CompatForm value={activeProvider.compat ?? {}} onChange={(compat) => updateActiveProvider({ ...activeProvider, compat })} t={t} />
+            <Checkbox checked={activeProvider.authHeader ?? false} onChange={(authHeader) => updateActiveProviderField({ ...activeProvider, authHeader }, "headers")} label={t("authHeader")} help={t("authHeaderHelp")} />
+            <HeadersEditor value={activeProvider.headers ?? []} onChange={(headers) => updateActiveProviderField({ ...activeProvider, headers }, "headers")} t={t} />
+            <CompatForm value={activeProvider.compat ?? {}} onChange={(compat) => updateActiveProviderField({ ...activeProvider, compat }, "headers")} t={t} />
           </div>
         ) : null}
         <div className="mt-4 flex justify-end gap-2">
@@ -1187,6 +1283,21 @@ function avatarInitial(label: string): string {
 
 function accountAuthLabel(account: AuthAccount): "OAuth" | "API Key" {
   return account.kind === "oauth" ? "OAuth" : "API Key";
+}
+
+function providerIsApplied(provider: Provider, accounts: AuthAccount[]) {
+  return provider.kind === "official" && provider.authMode === "account"
+    ? accounts.some((account) => account.id === provider.authAccountId && account.activeInPi)
+    : false;
+}
+
+function visibleProviderErrors(provider: Provider | undefined, state: ProviderValidationState) {
+  const all = validationErrors(provider);
+  if (!provider) return all;
+  const validation = state[provider.id];
+  if (validation?.attempted) return all;
+  const touched = validation?.touched ?? {};
+  return Object.fromEntries(Object.entries(all).filter(([field]) => touched[field]));
 }
 
 function Toast({ toast, onClose }: { toast: ToastState; onClose: () => void }) {
@@ -1732,7 +1843,9 @@ function ProvidersPanel({
   fetching,
   oauthState,
   testState,
+  drawerOpen,
   onSelectProvider,
+  onCloseDrawer,
   onAddProvider,
   onDuplicateProvider,
   onChangeProvider,
@@ -1774,10 +1887,12 @@ function ProvidersPanel({
   fetching: boolean;
   oauthState: OAuthState;
   testState: TestState;
+  drawerOpen: boolean;
   onSelectProvider: (id: string) => void;
+  onCloseDrawer: () => void;
   onAddProvider: () => void;
   onDuplicateProvider: () => void;
-  onChangeProvider: (provider: Provider) => void;
+  onChangeProvider: (provider: Provider, field: string) => void;
   onOpenDelete: () => void;
   onOpenAdvanced: () => void;
   onLoginOAuth: (provider: Extract<Provider, { kind: "official" }>) => void;
@@ -1795,32 +1910,187 @@ function ProvidersPanel({
   onRemoveModel: (model: ModelConfig) => void;
   onUpdateDefaultModel: (defaultModelId: string) => void;
   onSave: () => void;
-  onTest: () => void;
+  onTest: (providerEntryId?: string) => void;
   onViewOutput: () => void;
   t: ReturnType<typeof createTranslator>;
 }) {
   const officialProviders = config.providers.filter((provider) => provider.kind === "official");
   const customProviders = config.providers.filter((provider) => provider.kind === "custom");
-  const isApplied = (provider: Provider) =>
-    provider.kind === "official" && provider.authMode === "account"
-      ? accounts.some((account) => account.id === provider.authAccountId && account.activeInPi)
-      : false;
-  const renderProviderItem = (provider: Provider) => (
-    <button
-      type="button"
+  const isApplied = (provider: Provider) => providerIsApplied(provider, accounts);
+  const isPersistedActiveProvider = activeProvider ? config.providers.some((provider) => provider.id === activeProvider.id) : false;
+  const renderProviderRow = (provider: Provider) => (
+    <div
       key={provider.id}
-      className={`prov-item ${provider.id === config.activeProviderId ? "active" : ""}`}
+      className={`prov-row ${provider.id === config.activeProviderId ? "active" : ""}`}
+      role="button"
+      tabIndex={0}
       aria-pressed={provider.id === config.activeProviderId}
       onClick={() => onSelectProvider(provider.id)}
+      onKeyDown={(event) => {
+        if (event.key === "Enter" || event.key === " ") {
+          event.preventDefault();
+          onSelectProvider(provider.id);
+        }
+      }}
     >
-      <span className={`pi-dot avatar ${providerAvatarClass(piProviderId(provider))}`}>{avatarInitial(provider.name)}</span>
-      <span className="meta">
-        <span className="pn">{provider.name}</span>
+      <span className={`pi-dot avatar ${providerAvatarClass(piProviderId(provider))}`} aria-hidden="true">{avatarInitial(provider.name)}</span>
+      <span className="prov-main">
+        <span className="pn">
+          <span className="truncate">{provider.name}</span>
+          {isApplied(provider) ? <span className="badge-active"><Check size={12} /> {t("activeInPi")}</span> : null}
+        </span>
         <span className="pt">{providerSummary(provider, accounts, t)}</span>
       </span>
-      {isApplied(provider) ? <span className="live" title={t("activeInPi")} /> : null}
-    </button>
+      <span className="prov-kind">{provider.kind === "official" ? t("official") : t("custom")}</span>
+      <span className="prov-model">{provider.defaultModelId || t("noDefaultModel")}</span>
+      <span className="prov-row-actions" onClick={(event) => event.stopPropagation()}>
+        <button type="button" className="btn sm" onClick={() => onTest(provider.id)} disabled={providerBusy}>
+          <CirclePlay size={14} /> {t("test")}
+        </button>
+      </span>
+    </div>
   );
+  const providerDrawer =
+    activeProvider && drawerOpen ? (
+      <div className="provider-drawer-backdrop" role="presentation" onClick={onCloseDrawer}>
+        <aside className="provider-drawer" role="dialog" aria-modal="true" aria-labelledby="provider-drawer-title" onClick={(event) => event.stopPropagation()}>
+          <div className="provider-drawer-head">
+            <div className="form-top">
+              <div className={`ft-icon avatar ${providerAvatarClass(piProviderId(activeProvider))}`}>{avatarInitial(activeProvider.name)}</div>
+              <div className="ft-text">
+                <h2 id="provider-drawer-title">
+                  {activeProvider.name}
+                  {isApplied(activeProvider) ? (
+                    <span className="badge-active"><Check size={12} /> {t("activeInPi")}</span>
+                  ) : null}
+                </h2>
+                <p>{activeProvider.kind === "official" ? t("official") : t("custom")} · {providerLabel(activeProvider)}</p>
+              </div>
+            </div>
+            <button type="button" className="icon-button" aria-label={t("close")} onClick={onCloseDrawer}>
+              <X size={16} />
+            </button>
+          </div>
+
+          <div className="prov-form">
+            <div className="card">
+              <div className="card-title">{t("basicInfo")}</div>
+              <div className="editor-grid grid grid-cols-2 gap-4">
+                <Field label={t("name")} error={fieldError(errors.name, t)} required>
+                  <input value={activeProvider.name} onChange={(event) => onChangeProvider({ ...activeProvider, name: event.target.value }, "name")} />
+                </Field>
+                <Field label={t("kind")}>
+                  <Select
+                    value={activeProvider.kind}
+                    aria-label={t("kind")}
+                    onChange={(value) => {
+                      const replacement = value === "official" ? createOfficialProvider() : createCustomProvider();
+                      onChangeProvider({ ...replacement, id: activeProvider.id, name: activeProvider.name }, "kind");
+                    }}
+                    options={[
+                      { value: "official", label: t("official") },
+                      { value: "custom", label: t("custom") },
+                    ]}
+                  />
+                </Field>
+              </div>
+              {activeProvider.kind === "official" ? (
+                <OfficialProviderForm
+                  provider={activeProvider}
+                  onChange={onChangeProvider}
+                  errors={errors}
+                  showKey={showKey}
+                  setShowKey={setShowKey}
+                  onOpenAdvanced={onOpenAdvanced}
+                  onLoginOAuth={onLoginOAuth}
+                  onSaveApiKeyAsAccount={onSaveApiKeyAsAccount}
+                  onManageAccounts={onManageAccounts}
+                  oauthState={oauthState}
+                  accounts={accounts}
+                  busy={accountBusy}
+                  t={t}
+                />
+              ) : (
+                <CustomProviderForm
+                  provider={activeProvider}
+                  onChange={onChangeProvider}
+                  errors={errors}
+                  showKey={showKey}
+                  setShowKey={setShowKey}
+                  onOpenAdvanced={onOpenAdvanced}
+                  t={t}
+                />
+              )}
+            </div>
+
+            <div className="card">
+              <div className="card-title">
+                {t("models")}
+                {activeProvider.kind === "official" ? (
+                  <button type="button" className="btn sm ghost" style={{ marginLeft: "auto", height: 26 }} onClick={onRefreshPiModels} disabled={piModelsLoading}>
+                    <RefreshCw size={14} /> {t("refreshPiModels")}
+                  </button>
+                ) : (
+                  <button type="button" className="btn sm ghost" style={{ marginLeft: "auto", height: 26 }} onClick={onFetchModels} disabled={fetching}>
+                    <Download size={14} /> {t("fetchModels")}
+                  </button>
+                )}
+                <button type="button" className="btn sm" style={{ height: 26 }} onClick={onAddModel}>
+                  <Plus size={14} /> {t("addModel")}
+                </button>
+              </div>
+              {activeProvider.kind === "official" ? (
+                <OfficialModelSelector
+                  provider={activeProvider}
+                  piModels={piModels}
+                  loading={piModelsLoading}
+                  search={piModelSearch}
+                  onSearch={onPiModelSearch}
+                  onToggle={onToggleOfficialModel}
+                  onEdit={onEditModel}
+                  onRemove={onRemoveModel}
+                  t={t}
+                />
+              ) : (
+                <CustomModelSelector
+                  provider={activeProvider}
+                  candidateModels={candidateModels}
+                  selectedCandidates={selectedCandidates}
+                  search={modelSearch}
+                  fetching={fetching}
+                  onSearch={onModelSearch}
+                  onSelect={onSelectCandidates}
+                  onAddSelected={onAddSelectedModels}
+                  onEdit={onEditModel}
+                  onRemove={onRemoveModel}
+                  t={t}
+                />
+              )}
+              <Field label={t("defaultModel")} error={fieldError(errors.models, t)} required>
+                <Select
+                  value={activeProvider.defaultModelId}
+                  aria-label={t("defaultModel")}
+                  disabled={enabledModels(activeProvider).length === 0}
+                  onChange={onUpdateDefaultModel}
+                  options={enabledModels(activeProvider).map((model) => ({ value: model.id, label: model.id }))}
+                />
+              </Field>
+            </div>
+
+            <div className="form-footer">
+              <div className="left">
+                <span className="muted" style={{ fontSize: "11.5px" }}>{testState.status === "idle" ? t("autoStaged") : t(testState.status)}</span>
+              </div>
+              <div className="right">
+                <button type="button" className="btn" onClick={onSave} disabled={providerBusy}>
+                  <Save size={15} /> {t("save")}
+                </button>
+              </div>
+            </div>
+          </div>
+        </aside>
+      </div>
+    ) : null;
   return (
     <section className="screen" role="tabpanel" aria-label={t("providers")}>
       <div className="page-head">
@@ -1828,176 +2098,61 @@ function ProvidersPanel({
           <h1>{t("providers")}</h1>
           <p>{t("providersSubtitle")}</p>
         </div>
-        <div className="head-actions">
-          {activeProvider ? (
-            <button type="button" className="btn" onClick={onDuplicateProvider}>
-              <Copy size={15} /> {t("duplicate")}
-            </button>
-          ) : null}
-          <button type="button" className="btn primary" onClick={onAddProvider}>
-            <Plus size={15} /> {t("newProvider")}
-          </button>
-        </div>
       </div>
 
       {config.providers.length === 0 ? (
-        <div className="prov-empty">
-          <div className="empty-illustration" aria-hidden="true">
-            <Server size={28} />
+        <div className="prov-stack">
+          <div className="provider-actionbar">
+            <button type="button" className="btn primary" onClick={onAddProvider}>
+              <Plus size={15} /> {t("newProvider")}
+            </button>
           </div>
-          <p className="muted m-0">{t("noProvider")}</p>
+          <div className="prov-empty">
+            <div className="empty-illustration" aria-hidden="true">
+              <Server size={28} />
+            </div>
+            <p className="muted m-0">{t("noProvider")}</p>
+          </div>
         </div>
       ) : (
-        <div className="prov-layout">
-          <aside className="prov-list" aria-label={t("providers")}>
-            {officialProviders.length > 0 ? <div className="prov-list-label">{t("official")}</div> : null}
-            {officialProviders.map(renderProviderItem)}
-            {customProviders.length > 0 ? <div className="prov-list-label">{t("custom")}</div> : null}
-            {customProviders.map(renderProviderItem)}
-          </aside>
-
-          {activeProvider ? (
-            <div className="prov-form">
-              <div className="form-top">
-                <div className={`ft-icon avatar ${providerAvatarClass(piProviderId(activeProvider))}`}>{avatarInitial(activeProvider.name)}</div>
-                <div className="ft-text">
-                  <h2>
-                    {activeProvider.name}
-                    {isApplied(activeProvider) ? (
-                      <span className="badge-active"><Check size={12} /> {t("activeInPi")}</span>
-                    ) : null}
-                  </h2>
-                  <p>{activeProvider.kind === "official" ? t("official") : t("custom")} · {providerLabel(activeProvider)}</p>
-                </div>
-                <div className="ft-actions">
-                  <button type="button" className="btn sm" onClick={onTest} disabled={providerBusy}>
-                    <CirclePlay size={14} /> {t("test")}
-                  </button>
-                  <button type="button" className="btn sm ghost" onClick={onViewOutput}>
-                    {t("viewOutput")}
-                  </button>
-                  <button type="button" className="btn sm danger-text" onClick={onOpenDelete}>
-                    <Trash2 size={14} /> {t("delete")}
-                  </button>
-                </div>
-              </div>
-
-              <div className="card">
-                <div className="card-title">{t("basicInfo")}</div>
-                <div className="editor-grid grid grid-cols-2 gap-4">
-                  <Field label={t("name")} error={fieldError(errors.name, t)} required>
-                    <input value={activeProvider.name} onChange={(event) => onChangeProvider({ ...activeProvider, name: event.target.value })} />
-                  </Field>
-                  <Field label={t("kind")}>
-                    <Select
-                      value={activeProvider.kind}
-                      aria-label={t("kind")}
-                      onChange={(value) => {
-                        const replacement = value === "official" ? createOfficialProvider() : createCustomProvider();
-                        onChangeProvider({ ...replacement, id: activeProvider.id, name: activeProvider.name });
-                      }}
-                      options={[
-                        { value: "official", label: t("official") },
-                        { value: "custom", label: t("custom") },
-                      ]}
-                    />
-                  </Field>
-                </div>
-                {activeProvider.kind === "official" ? (
-                  <OfficialProviderForm
-                    provider={activeProvider}
-                    onChange={onChangeProvider}
-                    errors={errors}
-                    showKey={showKey}
-                    setShowKey={setShowKey}
-                    onOpenAdvanced={onOpenAdvanced}
-                    onLoginOAuth={onLoginOAuth}
-                    onSaveApiKeyAsAccount={onSaveApiKeyAsAccount}
-                    onManageAccounts={onManageAccounts}
-                    oauthState={oauthState}
-                    accounts={accounts}
-                    busy={accountBusy}
-                    t={t}
-                  />
-                ) : (
-                  <CustomProviderForm
-                    provider={activeProvider}
-                    onChange={onChangeProvider}
-                    errors={errors}
-                    showKey={showKey}
-                    setShowKey={setShowKey}
-                    onOpenAdvanced={onOpenAdvanced}
-                    t={t}
-                  />
-                )}
-              </div>
-
-              <div className="card">
-                <div className="card-title">
-                  {t("models")}
-                  {activeProvider.kind === "official" ? (
-                    <button type="button" className="btn sm ghost" style={{ marginLeft: "auto", height: 26 }} onClick={onRefreshPiModels} disabled={piModelsLoading}>
-                      <RefreshCw size={14} /> {t("refreshPiModels")}
-                    </button>
-                  ) : (
-                    <button type="button" className="btn sm ghost" style={{ marginLeft: "auto", height: 26 }} onClick={onFetchModels} disabled={fetching}>
-                      <Download size={14} /> {t("fetchModels")}
-                    </button>
-                  )}
-                  <button type="button" className="btn sm" style={{ height: 26 }} onClick={onAddModel}>
-                    <Plus size={14} /> {t("addModel")}
-                  </button>
-                </div>
-                {activeProvider.kind === "official" ? (
-                  <OfficialModelSelector
-                    provider={activeProvider}
-                    piModels={piModels}
-                    loading={piModelsLoading}
-                    search={piModelSearch}
-                    onSearch={onPiModelSearch}
-                    onToggle={onToggleOfficialModel}
-                    onEdit={onEditModel}
-                    onRemove={onRemoveModel}
-                    t={t}
-                  />
-                ) : (
-                  <CustomModelSelector
-                    provider={activeProvider}
-                    candidateModels={candidateModels}
-                    selectedCandidates={selectedCandidates}
-                    search={modelSearch}
-                    fetching={fetching}
-                    onSearch={onModelSearch}
-                    onSelect={onSelectCandidates}
-                    onAddSelected={onAddSelectedModels}
-                    onEdit={onEditModel}
-                    onRemove={onRemoveModel}
-                    t={t}
-                  />
-                )}
-                <Field label={t("defaultModel")} error={fieldError(errors.models, t)} required>
-                  <Select
-                    value={activeProvider.defaultModelId}
-                    aria-label={t("defaultModel")}
-                    disabled={enabledModels(activeProvider).length === 0}
-                    onChange={onUpdateDefaultModel}
-                    options={enabledModels(activeProvider).map((model) => ({ value: model.id, label: model.id }))}
-                  />
-                </Field>
-              </div>
-
-              <div className="form-footer">
-                <div className="left">
-                  <span className="muted" style={{ fontSize: "11.5px" }}>{testState.status === "idle" ? t("autoStaged") : t(testState.status)}</span>
-                </div>
-                <div className="right">
-                  <button type="button" className="btn" onClick={onSave} disabled={providerBusy}>
-                    <Save size={15} /> {t("save")}
-                  </button>
-                </div>
-              </div>
+        <div className="prov-stack">
+          <div className="provider-actionbar">
+            <div className="left">
+              <button type="button" className="btn primary" onClick={onAddProvider}>
+                <Plus size={15} /> {t("newProvider")}
+              </button>
+              {activeProvider && isPersistedActiveProvider ? (
+                <button type="button" className="btn" onClick={onDuplicateProvider}>
+                  <Copy size={15} /> {t("duplicate")}
+                </button>
+              ) : null}
             </div>
-          ) : (
+            <div className="right">
+              <button type="button" className="btn sm ghost" onClick={onViewOutput}>
+                {t("viewOutput")}
+              </button>
+              {activeProvider && isPersistedActiveProvider ? (
+                <button type="button" className="btn sm danger-text" onClick={onOpenDelete}>
+                  <Trash2 size={14} /> {t("delete")}
+                </button>
+              ) : null}
+            </div>
+          </div>
+
+          <div className="provider-table" aria-label={t("providers")}>
+            <div className="provider-table-head">
+              <span>{t("provider")}</span>
+              <span>{t("kind")}</span>
+              <span>{t("defaultModel")}</span>
+              <span>{t("actions")}</span>
+            </div>
+            {officialProviders.length > 0 ? <div className="prov-list-label">{t("official")}</div> : null}
+            {officialProviders.map(renderProviderRow)}
+            {customProviders.length > 0 ? <div className="prov-list-label">{t("custom")}</div> : null}
+            {customProviders.map(renderProviderRow)}
+          </div>
+
+          {!activeProvider ? (
             <div className="prov-empty">
               <div className="grid gap-3 text-center">
                 <p className="muted m-0">{t("noProvider")}</p>
@@ -2006,9 +2161,10 @@ function ProvidersPanel({
                 </button>
               </div>
             </div>
-          )}
+          ) : null}
         </div>
       )}
+      {providerDrawer}
     </section>
   );
 }
@@ -2042,7 +2198,7 @@ function OfficialProviderForm({
   t,
 }: {
   provider: Extract<Provider, { kind: "official" }>;
-  onChange: (provider: Provider) => void;
+  onChange: (provider: Provider, field: string) => void;
   errors: Record<string, string>;
   showKey: boolean;
   setShowKey: (show: boolean) => void;
@@ -2079,7 +2235,7 @@ function OfficialProviderForm({
               authAccountId: undefined,
               models: [],
               defaultModelId: "",
-            });
+            }, "models");
           }}
           options={OFFICIAL_PROVIDER_IDS.map((providerId) => ({
             value: providerId,
@@ -2097,7 +2253,7 @@ function OfficialProviderForm({
               role="radio"
               aria-checked={provider.authMode === option.mode}
               className={`auth-card ${provider.authMode === option.mode ? "sel" : ""}`}
-              onClick={() => onChange({ ...provider, authMode: option.mode })}
+              onClick={() => onChange({ ...provider, authMode: option.mode }, option.mode === "apiKey" ? "apiKey" : option.mode === "account" ? "authAccountId" : "authMode")}
             >
               <span className="ac-top">
                 <span className="ac-radio" aria-hidden="true" />
@@ -2115,7 +2271,7 @@ function OfficialProviderForm({
               value={provider.authAccountId ?? ""}
               aria-label={t("account")}
               placeholder={t("selectAccount")}
-              onChange={(value) => onChange({ ...provider, authAccountId: value })}
+              onChange={(value) => onChange({ ...provider, authAccountId: value }, "authAccountId")}
               options={[
                 { value: "", label: t("selectAccount") },
                 ...providerAccounts.map((account) => ({ value: account.id, label: accountOptionLabel(account, t) })),
@@ -2129,7 +2285,7 @@ function OfficialProviderForm({
       ) : null}
       {provider.authMode === "apiKey" ? (
         <div className="grid gap-2">
-          <SecretField value={provider.apiKey} onChange={(apiKey) => onChange({ ...provider, apiKey })} showKey={showKey} setShowKey={setShowKey} error={fieldError(errors.apiKey, t)} required t={t} />
+          <SecretField value={provider.apiKey} onChange={(apiKey) => onChange({ ...provider, apiKey }, "apiKey")} showKey={showKey} setShowKey={setShowKey} error={fieldError(errors.apiKey, t)} required t={t} />
           <div className="flex flex-wrap items-center gap-2">
             <button type="button" onClick={() => onSaveApiKeyAsAccount(provider)} disabled={busy || !provider.apiKey.trim()}>
               {t("saveApiKeyAsAccount")}
@@ -2193,7 +2349,7 @@ function CustomProviderForm({
   t,
 }: {
   provider: Extract<Provider, { kind: "custom" }>;
-  onChange: (provider: Provider) => void;
+  onChange: (provider: Provider, field: string) => void;
   errors: Record<string, string>;
   showKey: boolean;
   setShowKey: (show: boolean) => void;
@@ -2204,11 +2360,11 @@ function CustomProviderForm({
     <div className="grid gap-4">
       <div className="editor-grid grid grid-cols-2 gap-4">
         <Field label={t("baseUrl")} error={fieldError(errors.baseUrl, t)} required>
-          <input value={provider.baseUrl} onChange={(event) => onChange({ ...provider, baseUrl: event.target.value })} />
+          <input value={provider.baseUrl} onChange={(event) => onChange({ ...provider, baseUrl: event.target.value }, "baseUrl")} />
         </Field>
-        <ApiSelect value={provider.api} onChange={(api) => onChange({ ...provider, api })} label={t("apiType")} error={fieldError(errors.api, t)} required />
+        <ApiSelect value={provider.api} onChange={(api) => onChange({ ...provider, api }, "api")} label={t("apiType")} error={fieldError(errors.api, t)} required />
       </div>
-      <SecretField value={provider.apiKey} onChange={(apiKey) => onChange({ ...provider, apiKey })} showKey={showKey} setShowKey={setShowKey} error={fieldError(errors.apiKey, t)} required t={t} />
+      <SecretField value={provider.apiKey} onChange={(apiKey) => onChange({ ...provider, apiKey }, "apiKey")} showKey={showKey} setShowKey={setShowKey} error={fieldError(errors.apiKey, t)} required t={t} />
       <AdvancedButton onClick={onOpenAdvanced} label={t("providerAdvanced")} help={t("providerAdvancedHelp")} />
     </div>
   );
