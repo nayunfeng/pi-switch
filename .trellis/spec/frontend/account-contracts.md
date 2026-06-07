@@ -9,9 +9,9 @@
 
 ### 2. Signatures
 
-- Frontend command wrapper: `createApiKeyAccount(providerId: string, label: string, baseUrl: string, apiKey: string)`.
-- Tauri command input: `{ providerId: string, label: string, baseUrl: string, apiKey: string }`.
-- Frontend account view: `{ id, providerId: string, label, kind, baseUrl?, identity?, createdAt, updatedAt, lastAppliedAt?, activeInPi? }`.
+- Frontend command wrapper: `createApiKeyAccount(providerId: string, label: string, baseUrl: string, apiKey: string, providerSnapshot?)`.
+- Tauri command input: `{ providerId: string, label: string, baseUrl: string, apiKey: string, providerSnapshot?: { name, defaultProvider, defaultModelId, enabledModelIds } }`.
+- Frontend account view: `{ id, providerId: string, label, kind, baseUrl?, providerSnapshot?, identity?, createdAt, updatedAt, lastAppliedAt?, activeInPi? }`.
 - Stored Rust account includes `base_url?: string` and private `credential`; the frontend view must not include `credential`.
 
 ### 3. Contracts
@@ -20,9 +20,11 @@
 - API Key accounts may use an official provider ID or a custom relay/provider key.
 - `baseUrl` is a required snapshot for new API Key accounts.
 - Built-in and custom providers are creation templates only; saved API Key accounts must keep their own `baseUrl` and credential snapshot.
-- Applying an API Key account updates authentication and endpoint state only; it must not update Pi `settings.json`, `defaultProvider`, `defaultModel`, or `enabledModels`.
+- When an API Key account is created from an existing provider, it must also keep a safe provider snapshot: `defaultProvider`, `defaultModelId`, and enabled model IDs.
+- Applying an API Key account with a provider snapshot updates Pi `settings.json` default fields from that snapshot: `defaultProvider`, `defaultModel`, and `enabledModels`.
+- Applying an API Key account without a provider snapshot preserves the previous settings behavior and must not infer defaults from the current provider list.
 - Official API Key accounts write credentials through Pi `auth.json` and write endpoint overrides to `models.json` when `baseUrl` is present.
-- Custom API Key accounts do not write `auth.json`; they write `baseUrl` and API key into the matching `models.json.providers[providerId]` entry.
+- Custom API Key accounts do not write `auth.json`; they write `baseUrl` and API key into the matching `models.json.providers[providerId]` entry, and write `settings.json` defaults only when a provider snapshot exists.
 
 ### 4. Validation & Error Matrix
 
@@ -43,7 +45,8 @@
 
 - Account view serialization exposes `baseUrl` and never exposes `credential`.
 - API Key account application preserves existing provider model entries in `models.json`.
-- Custom API Key account application writes `models.json` and does not touch `auth.json` or `settings.json`.
+- API Key account created from an existing provider applies the provider snapshot to Pi `settings.json`.
+- Custom API Key account without a provider snapshot writes `models.json` and does not touch `auth.json` or `settings.json`.
 - Frontend build must pass after changing account command payloads or account view types.
 
 ### 7. Wrong vs Correct
@@ -59,10 +62,10 @@ This loses the endpoint snapshot and cannot support custom relay accounts.
 #### Correct
 
 ```typescript
-await createApiKeyAccount(providerId, label, confirmedBaseUrl, confirmedApiKey);
+await createApiKeyAccount(providerId, label, confirmedBaseUrl, confirmedApiKey, providerSnapshot);
 ```
 
-The user-confirmed endpoint and credential are stored on the account, independent of later provider edits.
+The user-confirmed endpoint, credential, and optional provider defaults are stored on the account, independent of later provider edits.
 
 ## Scenario: OAuth Login Flows (browser / device-code / manual-callback)
 

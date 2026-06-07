@@ -198,6 +198,8 @@ pub struct AuthAccount {
     pub kind: AuthAccountKind,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub base_url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_snapshot: Option<AuthAccountProviderSnapshot>,
     pub credential: Value,
     pub created_at: String,
     pub updated_at: String,
@@ -205,6 +207,16 @@ pub struct AuthAccount {
     pub last_applied_at: Option<String>,
     #[serde(default, skip_serializing_if = "is_false")]
     pub active_in_pi: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AuthAccountProviderSnapshot {
+    pub name: String,
+    pub default_provider: String,
+    pub default_model_id: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub enabled_model_ids: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -216,6 +228,8 @@ pub struct AuthAccountView {
     pub kind: AuthAccountKind,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub base_url: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub provider_snapshot: Option<AuthAccountProviderSnapshot>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub identity: Vec<AuthAccountIdentity>,
     pub created_at: String,
@@ -411,29 +425,6 @@ pub struct SaveAppConfigInput {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct ApplyProviderInput {
-    pub config: AppConfig,
-    pub provider_entry_id: String,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct TestProviderInput {
-    pub config: AppConfig,
-    pub provider_entry_id: String,
-}
-
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct TestProviderResult {
-    pub status: String,
-    pub exit_code: Option<i32>,
-    pub stdout: String,
-    pub stderr: String,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
 pub struct FetchCustomProviderModelsInput {
     pub base_url: String,
     pub api_key: String,
@@ -486,6 +477,7 @@ pub struct CreateApiKeyAccountInput {
     pub label: String,
     pub base_url: String,
     pub api_key: String,
+    pub provider_snapshot: Option<AuthAccountProviderSnapshot>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -627,7 +619,6 @@ struct Paths {
     pi_models_file: PathBuf,
     pi_auth_file: PathBuf,
     pi_settings_file: PathBuf,
-    home: PathBuf,
 }
 
 fn default_config() -> AppConfig {
@@ -655,7 +646,6 @@ fn resolve_paths() -> AppResult<Paths> {
         pi_auth_file: pi_agent_dir.join("auth.json"),
         pi_settings_file: pi_agent_dir.join("settings.json"),
         pi_agent_dir,
-        home,
     })
 }
 
@@ -1008,6 +998,7 @@ fn account_to_view(account: &AuthAccount) -> AuthAccountView {
         label: account.label.clone(),
         kind: account.kind.clone(),
         base_url: account.base_url.clone(),
+        provider_snapshot: account.provider_snapshot.clone(),
         identity: account_identity(&account.credential),
         created_at: account.created_at.clone(),
         updated_at: account.updated_at.clone(),
@@ -1167,6 +1158,7 @@ fn normalize_accounts(accounts: Vec<AuthAccount>) -> AppResult<Vec<AuthAccount>>
             let trimmed = value.trim().to_string();
             (!trimmed.is_empty()).then_some(trimmed)
         });
+        account.provider_snapshot = normalize_account_provider_snapshot(account.provider_snapshot);
         if account.id.is_empty() {
             return Err(validation_error("账号 ID 不能为空"));
         }
@@ -1183,6 +1175,32 @@ fn normalize_accounts(accounts: Vec<AuthAccount>) -> AppResult<Vec<AuthAccount>>
         normalized.push(account);
     }
     Ok(normalized)
+}
+
+fn normalize_account_provider_snapshot(
+    snapshot: Option<AuthAccountProviderSnapshot>,
+) -> Option<AuthAccountProviderSnapshot> {
+    let snapshot = snapshot?;
+    let name = snapshot.name.trim().to_string();
+    let default_provider = snapshot.default_provider.trim().to_string();
+    let default_model_id = snapshot.default_model_id.trim().to_string();
+    let enabled_model_ids = snapshot
+        .enabled_model_ids
+        .into_iter()
+        .filter_map(|model_id| {
+            let trimmed = model_id.trim().to_string();
+            (!trimmed.is_empty()).then_some(trimmed)
+        })
+        .collect::<Vec<_>>();
+    if default_provider.is_empty() || default_model_id.is_empty() {
+        return None;
+    }
+    Some(AuthAccountProviderSnapshot {
+        name,
+        default_provider,
+        default_model_id,
+        enabled_model_ids,
+    })
 }
 
 fn save_accounts_store_to_path(path: &Path, store: &AccountsStore) -> AppResult<()> {
@@ -1581,12 +1599,53 @@ fn build_account_models_json(account: &AuthAccount, path: &Path) -> AppResult<Op
     }
 }
 
+fn build_account_settings_json(account: &AuthAccount, path: &Path) -> AppResult<Option<Value>> {
+    if account.kind != AuthAccountKind::ApiKey {
+        return Ok(None);
+    }
+    let Some(snapshot) = &account.provider_snapshot else {
+        return Ok(None);
+    };
+    let default_provider = snapshot.default_provider.trim();
+    let default_model = snapshot.default_model_id.trim();
+    if default_provider.is_empty() || default_model.is_empty() {
+        return Ok(None);
+    }
+    let mut settings = read_json_object(path, "PI_SETTINGS_WRITE_FAILED", "settings.json")?;
+    settings.insert(
+        "defaultProvider".to_string(),
+        Value::String(default_provider.to_string()),
+    );
+    settings.insert(
+        "defaultModel".to_string(),
+        Value::String(default_model.to_string()),
+    );
+    let enabled_model_ids = if snapshot.enabled_model_ids.is_empty() {
+        vec![Value::String(default_model.to_string())]
+    } else {
+        snapshot
+            .enabled_model_ids
+            .iter()
+            .filter_map(|model_id| {
+                let trimmed = model_id.trim();
+                (!trimmed.is_empty()).then(|| Value::String(trimmed.to_string()))
+            })
+            .collect::<Vec<_>>()
+    };
+    settings.insert(
+        "enabledModels".to_string(),
+        Value::Array(enabled_model_ids),
+    );
+    Ok(Some(Value::Object(settings)))
+}
+
 fn upsert_auth_account(
     store: &mut AccountsStore,
     provider_id: String,
     label: String,
     kind: AuthAccountKind,
     base_url: Option<String>,
+    provider_snapshot: Option<AuthAccountProviderSnapshot>,
     credential: Value,
 ) -> AppResult<AuthAccount> {
     validate_account_provider_id(&provider_id, &kind)?;
@@ -1602,6 +1661,7 @@ fn upsert_auth_account(
             && account.credential == credential
     }) {
         account.updated_at = now;
+        account.provider_snapshot = provider_snapshot.clone();
         validate_account_credential(account)?;
         return Ok(account.clone());
     }
@@ -1615,6 +1675,7 @@ fn upsert_auth_account(
             }) {
                 account.credential = credential;
                 account.updated_at = now;
+                account.provider_snapshot = provider_snapshot.clone();
                 validate_account_credential(account)?;
                 return Ok(account.clone());
             }
@@ -1626,6 +1687,7 @@ fn upsert_auth_account(
         label: unique_account_label(store, &label),
         kind,
         base_url,
+        provider_snapshot,
         credential,
         created_at: now.clone(),
         updated_at: now,
@@ -1654,6 +1716,7 @@ fn duplicate_auth_account_in_store(
         label: unique_account_label(store, &format!("{} Copy", source.label)),
         kind: source.kind,
         base_url: source.base_url,
+        provider_snapshot: source.provider_snapshot,
         credential: source.credential,
         created_at: now.clone(),
         updated_at: now,
@@ -1771,12 +1834,14 @@ fn create_api_key_account(input: CreateApiKeyAccountInput) -> AppResult<AuthAcco
     }
     let mut store = load_accounts_store()?;
     let label = normalize_account_label(Some(&input.label), provider_id, AuthAccountKind::ApiKey);
+    let provider_snapshot = normalize_account_provider_snapshot(input.provider_snapshot);
     let mut account = upsert_auth_account(
         &mut store,
         provider_id.to_string(),
         label,
         AuthAccountKind::ApiKey,
         Some(base_url.to_string()),
+        provider_snapshot,
         create_api_key_credential(api_key),
     )?;
     save_accounts_store(&store)?;
@@ -1874,6 +1939,17 @@ fn apply_account_to_pi(input: ApplyAuthAccountInput, paths: &Paths) -> AppResult
             &[],
         )?;
     }
+    if let Some(settings_json) =
+        build_account_settings_json(&store.accounts[index], &paths.pi_settings_file)?
+    {
+        write_pi_file(
+            &paths.pi_settings_file,
+            &settings_json,
+            "settings.json",
+            "PI_SETTINGS_WRITE_FAILED",
+            &[],
+        )?;
+    }
     write_account_to_pi_auth(&store.accounts[index], &paths.pi_auth_file)?;
     let now = now_timestamp_string();
     store.accounts[index].last_applied_at = Some(now.clone());
@@ -1907,32 +1983,11 @@ fn import_pi_auth_account(input: ImportPiAuthAccountInput) -> AppResult<AuthAcco
         kind.clone(),
         &credential,
     );
-    let mut account = upsert_auth_account(&mut store, provider_id, label, kind, None, credential)?;
+    let mut account =
+        upsert_auth_account(&mut store, provider_id, label, kind, None, None, credential)?;
     save_accounts_store_to_path(&paths.accounts_file, &store)?;
     account.active_in_pi = true;
     Ok(account_to_view(&account))
-}
-
-#[tauri::command]
-async fn test_provider(input: TestProviderInput) -> AppResult<TestProviderResult> {
-    let paths = resolve_paths()?;
-    fs::create_dir_all(&paths.pi_agent_dir).map_err(|err| {
-        AppError::new("PI_MODELS_WRITE_FAILED", "创建 Pi 配置目录失败")
-            .with_details(err.to_string())
-    })?;
-    let config = normalize_app_config(input.config);
-    apply_provider(&config, &input.provider_entry_id, &paths)?;
-    let provider = config
-        .providers
-        .iter()
-        .find(|provider| self::provider_entry_id(provider) == input.provider_entry_id)
-        .ok_or_else(|| validation_error("找不到要测试的供应商"))?;
-    run_pi_ping(
-        &paths.home,
-        &provider_id(provider),
-        default_model_id(provider),
-    )
-    .await
 }
 
 #[tauri::command]
@@ -2277,6 +2332,7 @@ async fn login_official_provider_oauth(
         label,
         AuthAccountKind::OAuth,
         None,
+        None,
         credential,
     )?;
     save_accounts_store(&store)?;
@@ -2614,248 +2670,8 @@ fn provider_id(provider: &Provider) -> String {
     }
 }
 
-fn default_model_id(provider: &Provider) -> &str {
-    match provider {
-        Provider::Official(provider) => &provider.default_model_id,
-        Provider::Custom(provider) => &provider.default_model_id,
-    }
-}
-
 fn sanitize_provider_id(value: &str) -> String {
     value.chars().filter(|char| !char.is_whitespace()).collect()
-}
-
-fn apply_provider(config: &AppConfig, provider_entry_id: &str, paths: &Paths) -> AppResult<()> {
-    validate_app_config_provider_ids(config)?;
-    let provider = config
-        .providers
-        .iter()
-        .find(|provider| self::provider_entry_id(provider) == provider_entry_id)
-        .ok_or_else(|| validation_error("找不到要应用的供应商"))?;
-    validate_provider(provider)?;
-
-    let models_json = build_models_json(provider);
-    let mut accounts = load_accounts_store_from_path(&paths.accounts_file)?;
-    let mut accounts_changed = false;
-    if let Some(replacing_provider_id) = provider_replaces_auth_provider_id(provider) {
-        let provider_account_id = provider_auth_account_id(provider);
-        let target_is_current = match provider_account_id {
-            Some(account_id) => {
-                account_matches_current_pi_auth(&accounts, account_id, &paths.pi_auth_file)?
-            }
-            None => false,
-        };
-        accounts_changed |= sync_current_pi_auth_to_matching_account(
-            &mut accounts,
-            &paths.pi_auth_file,
-            &replacing_provider_id,
-            provider_account_id.filter(|_| !target_is_current),
-        )?;
-    }
-    let auth_json = build_auth_json(provider, &paths.pi_auth_file, Some(&accounts))?;
-    let settings_json = build_settings_json(provider, &paths.pi_settings_file)?;
-    validate_pi_json(provider, &models_json, &auth_json, &settings_json)?;
-
-    let mut written = Vec::new();
-    write_pi_file(
-        &paths.pi_models_file,
-        &models_json,
-        "models.json",
-        "PI_MODELS_WRITE_FAILED",
-        &written,
-    )?;
-    written.push("models.json".to_string());
-    write_pi_file(
-        &paths.pi_auth_file,
-        &auth_json,
-        "auth.json",
-        "PI_AUTH_WRITE_FAILED",
-        &written,
-    )?;
-    written.push("auth.json".to_string());
-    write_pi_file(
-        &paths.pi_settings_file,
-        &settings_json,
-        "settings.json",
-        "PI_SETTINGS_WRITE_FAILED",
-        &written,
-    )?;
-    accounts_changed |= mark_provider_account_applied(provider, &mut accounts);
-    if accounts_changed {
-        save_accounts_store_to_path(&paths.accounts_file, &accounts)?;
-    }
-    Ok(())
-}
-
-fn provider_replaces_auth_provider_id(provider: &Provider) -> Option<String> {
-    let Provider::Official(provider) = provider else {
-        return None;
-    };
-    matches!(provider.auth_mode, AuthMode::ApiKey | AuthMode::Account)
-        .then(|| provider.provider_id.clone())
-}
-
-fn provider_auth_account_id(provider: &Provider) -> Option<&str> {
-    let Provider::Official(provider) = provider else {
-        return None;
-    };
-    if matches!(provider.auth_mode, AuthMode::Account) {
-        return provider.auth_account_id.as_deref();
-    }
-    None
-}
-
-fn mark_provider_account_applied(provider: &Provider, accounts: &mut AccountsStore) -> bool {
-    let Provider::Official(provider) = provider else {
-        return false;
-    };
-    if !matches!(provider.auth_mode, AuthMode::Account) {
-        return false;
-    }
-    let Some(account_id) = provider.auth_account_id.as_deref() else {
-        return false;
-    };
-    let Some(account) = accounts
-        .accounts
-        .iter_mut()
-        .find(|account| account.id == account_id)
-    else {
-        return false;
-    };
-    let now = now_timestamp_string();
-    account.last_applied_at = Some(now.clone());
-    account.updated_at = now;
-    true
-}
-
-fn build_models_json(provider: &Provider) -> Value {
-    match provider {
-        Provider::Official(provider) => {
-            let mut provider_object = Map::new();
-            if let Some(advanced) = &provider.advanced {
-                insert_trimmed_string(
-                    &mut provider_object,
-                    "baseUrl",
-                    advanced.base_url.as_deref(),
-                );
-                insert_trimmed_string(&mut provider_object, "api", advanced.api.as_deref());
-                insert_trimmed_string(&mut provider_object, "apiKey", advanced.api_key.as_deref());
-                insert_headers(&mut provider_object, advanced.headers.as_deref());
-                insert_bool(&mut provider_object, "authHeader", advanced.auth_header);
-                if let Some(compat) = &advanced.compat {
-                    if let Some(value) = compat_to_value(compat) {
-                        provider_object.insert("compat".to_string(), value);
-                    }
-                }
-            }
-
-            let custom_models = provider
-                .models
-                .iter()
-                .filter(|model| {
-                    model.source == Some(ModelSource::Custom)
-                        || (!model.override_built_in.unwrap_or(false)
-                            && model.source != Some(ModelSource::Builtin))
-                })
-                .filter_map(model_to_value)
-                .collect::<Vec<_>>();
-            if !custom_models.is_empty() {
-                provider_object.insert("models".to_string(), Value::Array(custom_models));
-            }
-
-            let mut overrides = Map::new();
-            for model in provider
-                .models
-                .iter()
-                .filter(|model| model.override_built_in.unwrap_or(false))
-            {
-                if let Some(value) = model_override_to_value(model) {
-                    overrides.insert(model.id.trim().to_string(), value);
-                }
-            }
-            if !overrides.is_empty() {
-                provider_object.insert("modelOverrides".to_string(), Value::Object(overrides));
-            }
-
-            let mut providers = Map::new();
-            if !provider_object.is_empty() {
-                providers.insert(provider.provider_id.clone(), Value::Object(provider_object));
-            }
-            json!({ "providers": providers })
-        }
-        Provider::Custom(provider) => {
-            let provider_id = provider_id(&Provider::Custom(provider.clone()));
-            let mut provider_object = Map::new();
-            provider_object.insert(
-                "baseUrl".to_string(),
-                Value::String(provider.base_url.trim().to_string()),
-            );
-            provider_object.insert("api".to_string(), Value::String(provider.api.clone()));
-            provider_object.insert(
-                "apiKey".to_string(),
-                Value::String(provider.api_key.trim().to_string()),
-            );
-            insert_headers(&mut provider_object, provider.headers.as_deref());
-            insert_bool(&mut provider_object, "authHeader", provider.auth_header);
-            if let Some(compat) = &provider.compat {
-                if let Some(value) = compat_to_value(compat) {
-                    provider_object.insert("compat".to_string(), value);
-                }
-            }
-            provider_object.insert(
-                "models".to_string(),
-                Value::Array(
-                    provider
-                        .models
-                        .iter()
-                        .filter(|model| !model.override_built_in.unwrap_or(false))
-                        .filter_map(model_to_value)
-                        .collect(),
-                ),
-            );
-            let mut providers = Map::new();
-            providers.insert(provider_id, Value::Object(provider_object));
-            json!({ "providers": providers })
-        }
-    }
-}
-
-fn build_auth_json(
-    provider: &Provider,
-    path: &Path,
-    accounts: Option<&AccountsStore>,
-) -> AppResult<Value> {
-    let mut auth = read_json_object(path, "PI_AUTH_WRITE_FAILED", "auth.json")?;
-    if let Provider::Official(provider) = provider {
-        match provider.auth_mode {
-            AuthMode::ApiKey => {
-                auth.insert(
-                    provider.provider_id.clone(),
-                    create_api_key_credential(&provider.api_key),
-                );
-            }
-            AuthMode::Account => {
-                let account_id = provider
-                    .auth_account_id
-                    .as_deref()
-                    .filter(|value| !value.trim().is_empty())
-                    .ok_or_else(|| validation_error("请选择认证账号"))?;
-                let account = accounts
-                    .ok_or_else(|| validation_error("账号库未加载"))?
-                    .accounts
-                    .iter()
-                    .find(|account| account.id == account_id)
-                    .ok_or_else(|| validation_error("认证账号不存在"))?;
-                if account.provider_id != provider.provider_id {
-                    return Err(validation_error("认证账号与供应商不匹配"));
-                }
-                validate_account_credential(account)?;
-                auth.insert(provider.provider_id.clone(), account.credential.clone());
-            }
-            AuthMode::Existing => {}
-        }
-    }
-    Ok(Value::Object(auth))
 }
 
 fn write_account_to_pi_auth(account: &AuthAccount, path: &Path) -> AppResult<()> {
@@ -2869,125 +2685,6 @@ fn write_account_to_pi_auth(account: &AuthAccount, path: &Path) -> AppResult<()>
         AppError::new("PI_AUTH_WRITE_FAILED", "写入 auth.json 失败")
             .with_details(err.message_with_details())
     })
-}
-
-fn build_settings_json(provider: &Provider, path: &Path) -> AppResult<Value> {
-    let mut settings = read_json_object(path, "PI_SETTINGS_WRITE_FAILED", "settings.json")?;
-    settings.insert(
-        "defaultProvider".to_string(),
-        Value::String(provider_id(provider)),
-    );
-    settings.insert(
-        "defaultModel".to_string(),
-        Value::String(match provider {
-            Provider::Official(provider) => provider.default_model_id.clone(),
-            Provider::Custom(provider) => provider.default_model_id.clone(),
-        }),
-    );
-    settings.insert(
-        "enabledModels".to_string(),
-        Value::Array(
-            enabled_models(match provider {
-                Provider::Official(provider) => &provider.models,
-                Provider::Custom(provider) => &provider.models,
-            })
-            .iter()
-            .map(|model| Value::String(model.id.trim().to_string()))
-            .collect(),
-        ),
-    );
-    Ok(Value::Object(settings))
-}
-
-fn model_to_value(model: &ModelConfig) -> Option<Value> {
-    let mut object = Map::new();
-    object.insert("id".to_string(), Value::String(model.id.trim().to_string()));
-    insert_model_optional_fields(&mut object, model, true);
-    Some(Value::Object(object))
-}
-
-fn model_override_to_value(model: &ModelConfig) -> Option<Value> {
-    let mut object = Map::new();
-    insert_model_optional_fields(&mut object, model, false);
-    (!object.is_empty()).then_some(Value::Object(object))
-}
-
-fn insert_model_optional_fields(
-    object: &mut Map<String, Value>,
-    model: &ModelConfig,
-    include_api: bool,
-) {
-    insert_trimmed_string(object, "name", model.name.as_deref());
-    if include_api {
-        insert_trimmed_string(object, "api", model.api.as_deref());
-    }
-    insert_bool(object, "reasoning", model.reasoning);
-    if let Some(input) = &model.input {
-        let values = input
-            .iter()
-            .filter_map(|item| {
-                let trimmed = item.trim();
-                (!trimmed.is_empty()).then(|| Value::String(trimmed.to_string()))
-            })
-            .collect::<Vec<_>>();
-        if !values.is_empty() {
-            object.insert("input".to_string(), Value::Array(values));
-        }
-    }
-    if let Some(value) = model.context_window {
-        object.insert("contextWindow".to_string(), json!(value));
-    }
-    if let Some(value) = model.max_tokens {
-        object.insert("maxTokens".to_string(), json!(value));
-    }
-    if let Some(cost) = &model.cost {
-        if let Some(value) = cost_to_value(cost) {
-            object.insert("cost".to_string(), value);
-        }
-    }
-    insert_headers(object, model.headers.as_deref());
-    if let Some(compat) = &model.compat {
-        if let Some(value) = compat_to_value(compat) {
-            object.insert("compat".to_string(), value);
-        }
-    }
-    if let Some(map) = &model.thinking_level_map {
-        let mut value = Map::new();
-        for key in ["off", "minimal", "low", "medium", "high", "xhigh"] {
-            if let Some(level_value) = map.get(key) {
-                value.insert(
-                    key.to_string(),
-                    level_value
-                        .as_ref()
-                        .map(|item| Value::String(item.clone()))
-                        .unwrap_or(Value::Null),
-                );
-            }
-        }
-        if !value.is_empty() {
-            object.insert("thinkingLevelMap".to_string(), Value::Object(value));
-        }
-    }
-}
-
-fn cost_to_value(cost: &CostConfig) -> Option<Value> {
-    let mut object = Map::new();
-    insert_f64(&mut object, "input", cost.input);
-    insert_f64(&mut object, "output", cost.output);
-    insert_f64(&mut object, "cacheRead", cost.cache_read);
-    insert_f64(&mut object, "cacheWrite", cost.cache_write);
-    (!object.is_empty()).then_some(Value::Object(object))
-}
-
-fn headers_to_value(headers: &[HeaderEntry]) -> Option<Value> {
-    let mut object = Map::new();
-    for header in headers {
-        let key = header.key.trim();
-        if !key.is_empty() {
-            object.insert(key.to_string(), Value::String(header.value.clone()));
-        }
-    }
-    (!object.is_empty()).then_some(Value::Object(object))
 }
 
 fn compat_to_value(compat: &CompatConfig) -> Option<Value> {
@@ -3212,14 +2909,6 @@ fn insert_percentile_object(
     }
 }
 
-fn insert_headers(object: &mut Map<String, Value>, headers: Option<&[HeaderEntry]>) {
-    if let Some(headers) = headers {
-        if let Some(value) = headers_to_value(headers) {
-            object.insert("headers".to_string(), value);
-        }
-    }
-}
-
 fn insert_string_array(object: &mut Map<String, Value>, key: &str, values: Option<&[String]>) {
     let Some(values) = values else {
         return;
@@ -3271,48 +2960,6 @@ fn read_json_object(path: &Path, code: &str, file_name: &str) -> AppResult<Map<S
         .as_object()
         .cloned()
         .ok_or_else(|| AppError::new(code, format!("{file_name} 根节点必须是 JSON object")))
-}
-
-fn validate_pi_json(
-    provider: &Provider,
-    models: &Value,
-    auth: &Value,
-    settings: &Value,
-) -> AppResult<()> {
-    if !models.get("providers").is_some_and(Value::is_object) {
-        return Err(validation_error("models.json 必须包含 providers object"));
-    }
-    if !auth.is_object() {
-        return Err(validation_error("auth.json 必须是 object"));
-    }
-    let settings_object = settings
-        .as_object()
-        .ok_or_else(|| validation_error("settings.json 必须是 object"))?;
-    let default_provider = settings_object
-        .get("defaultProvider")
-        .and_then(Value::as_str)
-        .ok_or_else(|| validation_error("settings.json 缺少 defaultProvider"))?;
-    let default_model = settings_object
-        .get("defaultModel")
-        .and_then(Value::as_str)
-        .ok_or_else(|| validation_error("settings.json 缺少 defaultModel"))?;
-    if default_provider != provider_id(provider) {
-        return Err(validation_error("defaultProvider 与当前供应商不一致"));
-    }
-    let model_exists = match provider {
-        Provider::Official(provider) => provider
-            .models
-            .iter()
-            .any(|model| model.id == default_model),
-        Provider::Custom(provider) => provider
-            .models
-            .iter()
-            .any(|model| model.id == default_model),
-    };
-    if !model_exists {
-        return Err(validation_error("defaultModel 与当前供应商模型列表不一致"));
-    }
-    Ok(())
 }
 
 fn write_pi_file(
@@ -3373,74 +3020,6 @@ fn atomic_write_json<T: Serialize>(target: &Path, value: &T) -> AppResult<()> {
         AppError::new("APP_CONFIG_WRITE_FAILED", "替换目标文件失败").with_details(err.to_string())
     })?;
     Ok(())
-}
-
-async fn run_pi_ping(
-    home: &Path,
-    provider_id: &str,
-    model_id: &str,
-) -> AppResult<TestProviderResult> {
-    let mut child = Command::new("pi")
-        .arg("--provider")
-        .arg(provider_id)
-        .arg("--model")
-        .arg(model_id)
-        .arg("--no-session")
-        .arg("-p")
-        .arg("ping")
-        .current_dir(home)
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .spawn()
-        .map_err(|err| {
-            AppError::new("PI_COMMAND_NOT_FOUND", "无法启动 pi 命令").with_details(err.to_string())
-        })?;
-
-    let mut stdout_pipe = child.stdout.take();
-    let mut stderr_pipe = child.stderr.take();
-
-    let wait_result = timeout(Duration::from_secs(15), child.wait()).await;
-    let status = match wait_result {
-        Ok(result) => result.map_err(|err| {
-            AppError::new("PI_TEST_FAILED", "等待 pi 命令失败").with_details(err.to_string())
-        })?,
-        Err(_) => {
-            let _ = child.kill().await;
-            let stdout = read_pipe(&mut stdout_pipe).await;
-            let stderr = read_pipe(&mut stderr_pipe).await;
-            return Ok(TestProviderResult {
-                status: "timeout".to_string(),
-                exit_code: None,
-                stdout,
-                stderr,
-            });
-        }
-    };
-
-    let stdout = read_pipe(&mut stdout_pipe).await;
-    let stderr = read_pipe(&mut stderr_pipe).await;
-    Ok(TestProviderResult {
-        status: if status.success() {
-            "success"
-        } else {
-            "failed"
-        }
-        .to_string(),
-        exit_code: status.code(),
-        stdout,
-        stderr,
-    })
-}
-
-async fn read_pipe<T>(pipe: &mut Option<T>) -> String
-where
-    T: AsyncReadExt + Unpin,
-{
-    let mut output = Vec::new();
-    if let Some(pipe) = pipe {
-        let _ = pipe.read_to_end(&mut output).await;
-    }
-    String::from_utf8_lossy(&output).to_string()
 }
 
 async fn find_pi_command_path() -> AppResult<PathBuf> {
@@ -3739,7 +3318,6 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             load_app_config,
             save_app_config,
-            test_provider,
             fetch_custom_provider_models,
             list_pi_models,
             load_auth_accounts,
@@ -3834,133 +3412,6 @@ mod tests {
         })
     }
 
-    fn incomplete_custom_provider() -> Provider {
-        Provider::Custom(CustomProvider {
-            id: "provider_incomplete".to_string(),
-            name: "Incomplete".to_string(),
-            base_url: "".to_string(),
-            api: "".to_string(),
-            api_key: "".to_string(),
-            headers: None,
-            auth_header: None,
-            compat: None,
-            models: Vec::new(),
-            default_model_id: "".to_string(),
-        })
-    }
-
-    fn official_provider_with_custom_and_override() -> Provider {
-        Provider::Official(OfficialProvider {
-            id: "provider_official".to_string(),
-            name: "OpenAI Daily".to_string(),
-            provider_id: "openai".to_string(),
-            auth_mode: AuthMode::Existing,
-            auth_account_id: None,
-            api_key: "".to_string(),
-            advanced: Some(ProviderAdvancedConfig {
-                base_url: Some(" https://proxy.example.com/v1 ".to_string()),
-                api: None,
-                api_key: Some("$PROXY_KEY".to_string()),
-                headers: Some(vec![HeaderEntry {
-                    key: "x-proxy".to_string(),
-                    value: "$PROXY_KEY".to_string(),
-                }]),
-                auth_header: Some(true),
-                compat: None,
-            }),
-            models: vec![
-                ModelConfig {
-                    id: "gpt-new".to_string(),
-                    name: Some("GPT New".to_string()),
-                    source: Some(ModelSource::Custom),
-                    override_built_in: None,
-                    api: Some("openai-responses".to_string()),
-                    reasoning: Some(true),
-                    input: Some(vec!["text".to_string()]),
-                    context_window: Some(272000),
-                    max_tokens: Some(128000),
-                    cost: None,
-                    headers: None,
-                    compat: None,
-                    thinking_level_map: None,
-                },
-                ModelConfig {
-                    id: "gpt-5.5".to_string(),
-                    name: Some("GPT 5.5 Proxy".to_string()),
-                    source: Some(ModelSource::Builtin),
-                    override_built_in: Some(true),
-                    api: None,
-                    reasoning: Some(true),
-                    input: None,
-                    context_window: Some(400000),
-                    max_tokens: Some(128000),
-                    cost: None,
-                    headers: None,
-                    compat: Some(CompatConfig {
-                        send_session_id_header: Some(false),
-                        ..Default::default()
-                    }),
-                    thinking_level_map: None,
-                },
-            ],
-            default_model_id: "gpt-5.5".to_string(),
-        })
-    }
-
-    #[test]
-    fn official_auth_upsert_preserves_oauth_and_unknown_entries() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("auth.json");
-        fs::write(
-            &path,
-            r#"{
-              "openai": { "type": "oauth", "accessToken": "keep-if-overwritten-by-current-official" },
-              "anthropic": { "type": "oauth", "accessToken": "keep" },
-              "unknown": { "shape": true }
-            }"#,
-        )
-        .unwrap();
-
-        let value = build_auth_json(&official_provider(), &path, None).unwrap();
-        assert_eq!(
-            value["openai"],
-            json!({ "type": "api_key", "key": "sk-test" })
-        );
-        assert_eq!(value["anthropic"]["type"], "oauth");
-        assert_eq!(value["unknown"]["shape"], true);
-    }
-
-    #[test]
-    fn custom_provider_does_not_write_auth_entry() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("auth.json");
-        fs::write(
-            &path,
-            r#"{ "openai": { "type": "oauth", "accessToken": "keep" } }"#,
-        )
-        .unwrap();
-
-        let value = build_auth_json(&custom_provider(), &path, None).unwrap();
-        assert_eq!(value["openai"]["type"], "oauth");
-        assert!(value.get("Relay").is_none());
-    }
-
-    #[test]
-    fn official_existing_auth_does_not_overwrite_auth_file() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("auth.json");
-        fs::write(
-            &path,
-            r#"{ "openai": { "type": "oauth", "accessToken": "keep" } }"#,
-        )
-        .unwrap();
-
-        let value =
-            build_auth_json(&official_provider_with_custom_and_override(), &path, None).unwrap();
-        assert_eq!(value["openai"]["type"], "oauth");
-        assert_eq!(value["openai"]["accessToken"], "keep");
-    }
-
     fn test_account(id: &str, provider_id: &str, token: &str) -> AuthAccount {
         AuthAccount {
             id: id.to_string(),
@@ -3968,6 +3419,7 @@ mod tests {
             label: id.to_string(),
             kind: AuthAccountKind::OAuth,
             base_url: None,
+            provider_snapshot: None,
             credential: json!({
                 "type": "oauth",
                 "accessToken": token
@@ -4031,6 +3483,7 @@ mod tests {
             label.clone(),
             AuthAccountKind::OAuth,
             None,
+            None,
             json!({ "type": "oauth", "accessToken": "token-a" }),
         )
         .unwrap();
@@ -4040,6 +3493,7 @@ mod tests {
             label.clone(),
             AuthAccountKind::OAuth,
             None,
+            None,
             json!({ "type": "oauth", "accessToken": "token-b" }),
         )
         .unwrap();
@@ -4048,6 +3502,7 @@ mod tests {
             "openai-codex".to_string(),
             label,
             AuthAccountKind::OAuth,
+            None,
             None,
             json!({ "type": "oauth", "accessToken": "token-c" }),
         )
@@ -4110,6 +3565,7 @@ mod tests {
             "openai-codex OAuth".to_string(),
             AuthAccountKind::OAuth,
             None,
+            None,
             json!({ "type": "oauth", "accessToken": "token-a" }),
         )
         .unwrap();
@@ -4152,6 +3608,7 @@ mod tests {
             "openai-codex".to_string(),
             "openai-codex OAuth".to_string(),
             AuthAccountKind::OAuth,
+            None,
             None,
             json!({
                 "type": "oauth",
@@ -4266,6 +3723,7 @@ mod tests {
             label: "OpenAI Key".to_string(),
             kind: AuthAccountKind::ApiKey,
             base_url: Some("https://api.openai.com/v1".to_string()),
+            provider_snapshot: None,
             credential: create_api_key_credential("sk-account"),
             created_at: "1".to_string(),
             updated_at: "1".to_string(),
@@ -4375,7 +3833,7 @@ mod tests {
     }
 
     fn official_provider_using_account(account_id: &str) -> Provider {
-        let mut provider = match official_provider_with_custom_and_override() {
+        let mut provider = match official_provider() {
             Provider::Official(provider) => provider,
             Provider::Custom(_) => unreachable!(),
         };
@@ -4466,34 +3924,6 @@ mod tests {
     }
 
     #[test]
-    fn official_account_auth_mode_writes_selected_account_credential() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("auth.json");
-        fs::write(
-            &path,
-            r#"{ "anthropic": { "type": "oauth", "accessToken": "keep" } }"#,
-        )
-        .unwrap();
-        let store = AccountsStore {
-            version: ACCOUNTS_VERSION,
-            accounts: vec![
-                test_account("codex_a", "openai-codex", "token-a"),
-                test_account("codex_b", "openai-codex", "token-b"),
-            ],
-        };
-
-        let value = build_auth_json(
-            &official_provider_using_account("codex_b"),
-            &path,
-            Some(&store),
-        )
-        .unwrap();
-
-        assert_eq!(value["openai-codex"]["accessToken"], "token-b");
-        assert_eq!(value["anthropic"]["accessToken"], "keep");
-    }
-
-    #[test]
     fn api_key_accounts_can_be_applied_to_pi_auth() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("auth.json");
@@ -4503,6 +3933,7 @@ mod tests {
             label: "OpenAI Key".to_string(),
             kind: AuthAccountKind::ApiKey,
             base_url: Some("https://api.openai.com/v1".to_string()),
+            provider_snapshot: None,
             credential: create_api_key_credential("sk-account"),
             created_at: "1".to_string(),
             updated_at: "1".to_string(),
@@ -4535,6 +3966,7 @@ mod tests {
                 label: "OpenAI Key".to_string(),
                 kind: AuthAccountKind::ApiKey,
                 base_url: Some("https://api.openai.com/v1".to_string()),
+                provider_snapshot: None,
                 credential: create_api_key_credential("sk-saved"),
                 created_at: "1".to_string(),
                 updated_at: "1".to_string(),
@@ -4576,6 +4008,7 @@ mod tests {
             label: "OpenAI Key".to_string(),
             kind: AuthAccountKind::ApiKey,
             base_url: Some(" https://proxy.example.com/v1 ".to_string()),
+            provider_snapshot: None,
             credential: create_api_key_credential("sk-account"),
             created_at: "1".to_string(),
             updated_at: "1".to_string(),
@@ -4622,6 +4055,7 @@ mod tests {
             label: "Relay Key".to_string(),
             kind: AuthAccountKind::ApiKey,
             base_url: Some("https://relay.example.com/v1".to_string()),
+            provider_snapshot: None,
             credential: create_api_key_credential("relay-key"),
             created_at: "1".to_string(),
             updated_at: "1".to_string(),
@@ -4644,7 +4078,6 @@ mod tests {
             pi_models_file: pi_agent_dir.join("models.json"),
             pi_auth_file: pi_agent_dir.join("auth.json"),
             pi_settings_file: pi_agent_dir.join("settings.json"),
-            home: dir.path().to_path_buf(),
         };
 
         let applied = apply_account_to_pi(
@@ -4676,6 +4109,83 @@ mod tests {
         assert!(auth.get("Relay").is_none());
         assert_eq!(settings["defaultProvider"], "openai");
         assert_eq!(settings["defaultModel"], "gpt-5.5");
+    }
+
+    #[test]
+    fn applying_api_key_account_with_provider_snapshot_updates_settings_defaults() {
+        let dir = tempfile::tempdir().unwrap();
+        let app_config_dir = dir.path().join("PiSwitch");
+        let pi_agent_dir = dir.path().join(".pi").join("agent");
+        fs::create_dir_all(&app_config_dir).unwrap();
+        fs::create_dir_all(&pi_agent_dir).unwrap();
+        fs::write(
+            pi_agent_dir.join("auth.json"),
+            r#"{ "openai": { "type": "oauth", "accessToken": "keep" } }"#,
+        )
+        .unwrap();
+        fs::write(
+            pi_agent_dir.join("settings.json"),
+            r#"{ "theme": "dark", "defaultProvider": "openai", "defaultModel": "gpt-5.5", "enabledModels": ["gpt-5.5"] }"#,
+        )
+        .unwrap();
+        fs::write(
+            pi_agent_dir.join("models.json"),
+            r#"{ "providers": { "Relay": { "models": [{ "id": "deepseek-chat" }] } } }"#,
+        )
+        .unwrap();
+        let account = AuthAccount {
+            id: "relay_key".to_string(),
+            provider_id: "Relay".to_string(),
+            label: "Relay Key".to_string(),
+            kind: AuthAccountKind::ApiKey,
+            base_url: Some("https://relay.example.com/v1".to_string()),
+            provider_snapshot: Some(AuthAccountProviderSnapshot {
+                name: "Relay".to_string(),
+                default_provider: "Relay".to_string(),
+                default_model_id: "deepseek chat".to_string(),
+                enabled_model_ids: vec![
+                    "deepseek chat".to_string(),
+                    "deepseek coder".to_string(),
+                ],
+            }),
+            credential: create_api_key_credential("relay-key"),
+            created_at: "1".to_string(),
+            updated_at: "1".to_string(),
+            last_applied_at: None,
+            active_in_pi: false,
+        };
+        save_accounts_store_to_path(
+            &app_config_dir.join("accounts.json"),
+            &AccountsStore {
+                version: ACCOUNTS_VERSION,
+                accounts: vec![account],
+            },
+        )
+        .unwrap();
+        let paths = Paths {
+            app_config_dir: app_config_dir.clone(),
+            app_config_file: app_config_dir.join("config.json"),
+            accounts_file: app_config_dir.join("accounts.json"),
+            pi_agent_dir: pi_agent_dir.clone(),
+            pi_models_file: pi_agent_dir.join("models.json"),
+            pi_auth_file: pi_agent_dir.join("auth.json"),
+            pi_settings_file: pi_agent_dir.join("settings.json"),
+        };
+
+        apply_account_to_pi(
+            ApplyAuthAccountInput {
+                account_id: "relay_key".to_string(),
+            },
+            &paths,
+        )
+        .unwrap();
+
+        let settings: Value =
+            serde_json::from_str(&fs::read_to_string(paths.pi_settings_file).unwrap()).unwrap();
+        assert_eq!(settings["theme"], "dark");
+        assert_eq!(settings["defaultProvider"], "Relay");
+        assert_eq!(settings["defaultModel"], "deepseek chat");
+        assert_eq!(settings["enabledModels"], json!(["deepseek chat", "deepseek coder"]));
     }
 
     #[test]
@@ -4890,77 +4400,6 @@ mod tests {
     }
 
     #[test]
-    fn settings_preserves_other_fields_and_upserts_enabled_models() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("settings.json");
-        fs::write(
-            &path,
-            r#"{ "theme": "dark", "defaultProvider": "old", "defaultModel": "old-model", "enabledModels": ["old"] }"#,
-        )
-        .unwrap();
-
-        let value = build_settings_json(&custom_provider(), &path).unwrap();
-        assert_eq!(value["theme"], "dark");
-        assert_eq!(value["defaultProvider"], "Relay");
-        assert_eq!(value["defaultModel"], "deepseek chat");
-        assert_eq!(value["enabledModels"], json!(["deepseek chat"]));
-    }
-
-    #[test]
-    fn custom_models_json_writes_full_model_shape_and_omits_provider_name() {
-        let value = build_models_json(&custom_provider());
-        let provider = &value["providers"]["Relay"];
-        assert!(provider.get("name").is_none());
-        assert_eq!(provider["baseUrl"], "https://relay.example.com/v1");
-        assert_eq!(provider["apiKey"], "relay-key");
-        assert_eq!(provider["models"][0]["id"], "deepseek chat");
-        assert_eq!(provider["models"][0]["name"], "DeepSeek Chat");
-        assert_eq!(provider["models"][0]["reasoning"], true);
-        assert_eq!(provider["models"][0]["input"], json!(["text", "image"]));
-        assert_eq!(provider["models"][0]["contextWindow"], 128000);
-        assert_eq!(provider["models"][0]["maxTokens"], 32000);
-        assert_eq!(provider["models"][0]["cost"]["cacheRead"], 0.01);
-        assert_eq!(
-            provider["models"][0]["headers"]["x-model-key"],
-            "$MODEL_KEY"
-        );
-        assert_eq!(
-            provider["models"][0]["compat"]["supportsDeveloperRole"],
-            false
-        );
-        assert_eq!(
-            provider["models"][0]["thinkingLevelMap"]["minimal"],
-            Value::Null
-        );
-    }
-
-    #[test]
-    fn official_models_json_is_empty_without_custom_models_or_overrides() {
-        let value = build_models_json(&official_provider());
-        assert_eq!(value, json!({ "providers": {} }));
-    }
-
-    #[test]
-    fn official_models_json_writes_custom_models_and_model_overrides() {
-        let value = build_models_json(&official_provider_with_custom_and_override());
-        let provider = &value["providers"]["openai"];
-        assert_eq!(provider["baseUrl"], "https://proxy.example.com/v1");
-        assert_eq!(provider["apiKey"], "$PROXY_KEY");
-        assert_eq!(provider["headers"]["x-proxy"], "$PROXY_KEY");
-        assert_eq!(provider["authHeader"], true);
-        assert_eq!(provider["models"][0]["id"], "gpt-new");
-        assert_eq!(provider["models"][0]["api"], "openai-responses");
-        assert_eq!(
-            provider["modelOverrides"]["gpt-5.5"]["name"],
-            "GPT 5.5 Proxy"
-        );
-        assert_eq!(
-            provider["modelOverrides"]["gpt-5.5"]["compat"]["sendSessionIdHeader"],
-            false
-        );
-    }
-
-    #[test]
     fn open_router_routing_accepts_camel_case_ipc_and_writes_snake_case_pi_config() {
         let routing: OpenRouterRouting = serde_json::from_value(json!({
             "allowFallbacks": true,
@@ -4979,41 +4418,6 @@ mod tests {
         assert_eq!(value["zdr"], true);
         assert_eq!(value["enforce_distillable_text"], true);
         assert_eq!(value["sort"], "price");
-    }
-
-    #[test]
-    fn app_config_ipc_routing_reaches_pi_models_json() {
-        let config: AppConfig = serde_json::from_value(json!({
-            "schemaVersion": SCHEMA_VERSION,
-            "theme": "system",
-            "activeProviderId": "provider_custom",
-            "providers": [{
-                "kind": "custom",
-                "id": "provider_custom",
-                "name": "Relay",
-                "baseUrl": "https://relay.example.com/v1",
-                "api": "openai-completions",
-                "apiKey": "relay-key",
-                "compat": {
-                    "openRouterRouting": {
-                        "allowFallbacks": true,
-                        "requireParameters": false,
-                        "dataCollection": "deny",
-                        "enforceDistillableText": true
-                    }
-                },
-                "models": [{ "id": "gpt-5.5", "source": "custom" }],
-                "defaultModelId": "gpt-5.5"
-            }]
-        }))
-        .unwrap();
-
-        let models = build_models_json(&config.providers[0]);
-        let routing = &models["providers"]["Relay"]["compat"]["openRouterRouting"];
-        assert_eq!(routing["allow_fallbacks"], true);
-        assert_eq!(routing["require_parameters"], false);
-        assert_eq!(routing["data_collection"], "deny");
-        assert_eq!(routing["enforce_distillable_text"], true);
     }
 
     #[test]
@@ -5292,210 +4696,6 @@ openai    o3-mini                200K     100K     yes       no
         assert!(provider.auth_account_id.is_none());
         assert_eq!(provider.api_key, "");
         validate_app_config(&normalized).unwrap();
-    }
-
-    #[test]
-    fn apply_provider_writes_pi_files_in_expected_shape() {
-        let dir = tempfile::tempdir().unwrap();
-        let pi_agent_dir = dir.path().join(".pi").join("agent");
-        fs::create_dir_all(&pi_agent_dir).unwrap();
-        fs::write(
-            pi_agent_dir.join("auth.json"),
-            r#"{ "anthropic": { "type": "oauth", "accessToken": "keep" } }"#,
-        )
-        .unwrap();
-        fs::write(
-            pi_agent_dir.join("settings.json"),
-            r#"{ "theme": "dark", "sessionDir": "keep" }"#,
-        )
-        .unwrap();
-
-        let paths = Paths {
-            app_config_dir: dir.path().join("PiSwitch"),
-            app_config_file: dir.path().join("PiSwitch").join("config.json"),
-            accounts_file: dir.path().join("PiSwitch").join("accounts.json"),
-            pi_agent_dir: pi_agent_dir.clone(),
-            pi_models_file: pi_agent_dir.join("models.json"),
-            pi_auth_file: pi_agent_dir.join("auth.json"),
-            pi_settings_file: pi_agent_dir.join("settings.json"),
-            home: dir.path().to_path_buf(),
-        };
-        let config = AppConfig {
-            schema_version: SCHEMA_VERSION,
-            language: None,
-            theme: ThemeMode::System,
-            active_provider_id: Some("provider_custom".to_string()),
-            providers: vec![custom_provider()],
-        };
-
-        apply_provider(&config, "provider_custom", &paths).unwrap();
-
-        let models: Value =
-            serde_json::from_str(&fs::read_to_string(paths.pi_models_file).unwrap()).unwrap();
-        let auth: Value =
-            serde_json::from_str(&fs::read_to_string(paths.pi_auth_file).unwrap()).unwrap();
-        let settings: Value =
-            serde_json::from_str(&fs::read_to_string(paths.pi_settings_file).unwrap()).unwrap();
-        assert_eq!(models["providers"]["Relay"]["api"], "openai-completions");
-        assert_eq!(auth["anthropic"]["type"], "oauth");
-        assert_eq!(settings["theme"], "dark");
-        assert_eq!(settings["sessionDir"], "keep");
-        assert_eq!(settings["defaultProvider"], "Relay");
-        assert_eq!(settings["defaultModel"], "deepseek chat");
-        assert_eq!(settings["enabledModels"], json!(["deepseek chat"]));
-    }
-
-    #[test]
-    fn apply_provider_api_key_mode_persists_refreshed_previous_oauth_account() {
-        let dir = tempfile::tempdir().unwrap();
-        let app_config_dir = dir.path().join("PiSwitch");
-        let pi_agent_dir = dir.path().join(".pi").join("agent");
-        fs::create_dir_all(&pi_agent_dir).unwrap();
-        fs::create_dir_all(&app_config_dir).unwrap();
-        fs::write(
-            pi_agent_dir.join("auth.json"),
-            r#"{ "openai-codex": { "type": "oauth", "accessToken": "token-a-refreshed" } }"#,
-        )
-        .unwrap();
-        fs::write(pi_agent_dir.join("settings.json"), r#"{}"#).unwrap();
-        let mut account = test_account("codex_a", "openai-codex", "token-a");
-        account.last_applied_at = Some("100".to_string());
-        save_accounts_store_to_path(
-            &app_config_dir.join("accounts.json"),
-            &AccountsStore {
-                version: ACCOUNTS_VERSION,
-                accounts: vec![account],
-            },
-        )
-        .unwrap();
-        let paths = Paths {
-            app_config_dir: app_config_dir.clone(),
-            app_config_file: app_config_dir.join("config.json"),
-            accounts_file: app_config_dir.join("accounts.json"),
-            pi_agent_dir: pi_agent_dir.clone(),
-            pi_models_file: pi_agent_dir.join("models.json"),
-            pi_auth_file: pi_agent_dir.join("auth.json"),
-            pi_settings_file: pi_agent_dir.join("settings.json"),
-            home: dir.path().to_path_buf(),
-        };
-        let mut provider = match official_provider() {
-            Provider::Official(provider) => provider,
-            Provider::Custom(_) => unreachable!(),
-        };
-        provider.provider_id = "openai-codex".to_string();
-        provider.auth_mode = AuthMode::ApiKey;
-        provider.api_key = "sk-new".to_string();
-        provider.models[0].id = "codex-test-model".to_string();
-        provider.default_model_id = "codex-test-model".to_string();
-        let config = AppConfig {
-            schema_version: SCHEMA_VERSION,
-            language: None,
-            theme: ThemeMode::System,
-            active_provider_id: Some(provider.id.clone()),
-            providers: vec![Provider::Official(provider)],
-        };
-
-        apply_provider(&config, "provider_official", &paths).unwrap();
-
-        let store = load_accounts_store_from_path(&paths.accounts_file).unwrap();
-        assert_eq!(
-            store.accounts[0].credential["accessToken"],
-            "token-a-refreshed"
-        );
-        let auth: Value =
-            serde_json::from_str(&fs::read_to_string(paths.pi_auth_file).unwrap()).unwrap();
-        assert_eq!(auth["openai-codex"]["key"], "sk-new");
-    }
-
-    #[test]
-    fn apply_provider_account_mode_reapplying_current_account_keeps_refreshed_oauth() {
-        let dir = tempfile::tempdir().unwrap();
-        let app_config_dir = dir.path().join("PiSwitch");
-        let pi_agent_dir = dir.path().join(".pi").join("agent");
-        fs::create_dir_all(&pi_agent_dir).unwrap();
-        fs::create_dir_all(&app_config_dir).unwrap();
-        fs::write(
-            pi_agent_dir.join("auth.json"),
-            r#"{ "openai-codex": { "type": "oauth", "accessToken": "token-a-refreshed" } }"#,
-        )
-        .unwrap();
-        fs::write(pi_agent_dir.join("settings.json"), r#"{}"#).unwrap();
-        let mut account = test_account("codex_a", "openai-codex", "token-a");
-        account.last_applied_at = Some("100".to_string());
-        save_accounts_store_to_path(
-            &app_config_dir.join("accounts.json"),
-            &AccountsStore {
-                version: ACCOUNTS_VERSION,
-                accounts: vec![account],
-            },
-        )
-        .unwrap();
-        let paths = Paths {
-            app_config_dir: app_config_dir.clone(),
-            app_config_file: app_config_dir.join("config.json"),
-            accounts_file: app_config_dir.join("accounts.json"),
-            pi_agent_dir: pi_agent_dir.clone(),
-            pi_models_file: pi_agent_dir.join("models.json"),
-            pi_auth_file: pi_agent_dir.join("auth.json"),
-            pi_settings_file: pi_agent_dir.join("settings.json"),
-            home: dir.path().to_path_buf(),
-        };
-        let mut provider = match official_provider_using_account("codex_a") {
-            Provider::Official(provider) => provider,
-            Provider::Custom(_) => unreachable!(),
-        };
-        provider.models[0].id = "codex-test-model".to_string();
-        provider.default_model_id = "codex-test-model".to_string();
-        let config = AppConfig {
-            schema_version: SCHEMA_VERSION,
-            language: None,
-            theme: ThemeMode::System,
-            active_provider_id: Some(provider.id.clone()),
-            providers: vec![Provider::Official(provider)],
-        };
-
-        apply_provider(&config, "provider_official", &paths).unwrap();
-
-        let store = load_accounts_store_from_path(&paths.accounts_file).unwrap();
-        assert_eq!(
-            store.accounts[0].credential["accessToken"],
-            "token-a-refreshed"
-        );
-        let auth: Value =
-            serde_json::from_str(&fs::read_to_string(paths.pi_auth_file).unwrap()).unwrap();
-        assert_eq!(auth["openai-codex"]["accessToken"], "token-a-refreshed");
-    }
-
-    #[test]
-    fn apply_provider_ignores_unselected_incomplete_provider() {
-        let dir = tempfile::tempdir().unwrap();
-        let pi_agent_dir = dir.path().join(".pi").join("agent");
-        fs::create_dir_all(&pi_agent_dir).unwrap();
-        let paths = Paths {
-            app_config_dir: dir.path().join("PiSwitch"),
-            app_config_file: dir.path().join("PiSwitch").join("config.json"),
-            accounts_file: dir.path().join("PiSwitch").join("accounts.json"),
-            pi_agent_dir: pi_agent_dir.clone(),
-            pi_models_file: pi_agent_dir.join("models.json"),
-            pi_auth_file: pi_agent_dir.join("auth.json"),
-            pi_settings_file: pi_agent_dir.join("settings.json"),
-            home: dir.path().to_path_buf(),
-        };
-        let config = AppConfig {
-            schema_version: SCHEMA_VERSION,
-            language: None,
-            theme: ThemeMode::System,
-            active_provider_id: Some("provider_custom".to_string()),
-            providers: vec![custom_provider(), incomplete_custom_provider()],
-        };
-
-        apply_provider(&config, "provider_custom", &paths).unwrap();
-        assert!(validate_app_config(&config).is_err());
-
-        let settings: Value =
-            serde_json::from_str(&fs::read_to_string(paths.pi_settings_file).unwrap()).unwrap();
-        assert_eq!(settings["defaultProvider"], "Relay");
-        assert_eq!(settings["defaultModel"], "deepseek chat");
     }
 
     #[test]

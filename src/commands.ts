@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { AccountsStore, AppConfig, AppError, AuthAccount, OfficialProviderId, PiModelInfo, ResolvedPaths, TestProviderResult } from "./domain";
+import type { AccountsStore, AppConfig, AppError, AuthAccount, AuthAccountProviderSnapshot, OfficialProviderId, PiModelInfo, ResolvedPaths } from "./domain";
 
 type TauriInternals = {
   invoke?: typeof invoke;
@@ -35,10 +35,6 @@ export async function saveAppConfig(config: AppConfig) {
   return tauriInvoke<void>("save_app_config", { input: { config } });
 }
 
-export async function testProvider(config: AppConfig, providerEntryId: string) {
-  return tauriInvoke<TestProviderResult>("test_provider", { input: { config, providerEntryId } });
-}
-
 export async function fetchCustomProviderModels(baseUrl: string, apiKey: string) {
   const result = await tauriInvoke<{ models: string[] }>("fetch_custom_provider_models", {
     input: { baseUrl, apiKey },
@@ -69,9 +65,15 @@ export async function cancelOAuthLogin(loginId: string) {
   });
 }
 
-export async function createApiKeyAccount(providerId: string, label: string, baseUrl: string, apiKey: string) {
+export async function createApiKeyAccount(
+  providerId: string,
+  label: string,
+  baseUrl: string,
+  apiKey: string,
+  providerSnapshot?: AuthAccountProviderSnapshot,
+) {
   return tauriInvoke<AuthAccount>("create_api_key_account", {
-    input: { providerId, label, baseUrl, apiKey },
+    input: { providerId, label, baseUrl, apiKey, providerSnapshot },
   });
 }
 

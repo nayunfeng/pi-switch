@@ -215,12 +215,20 @@ export type AppConfig = {
 
 export type AuthAccountKind = "oauth" | "apiKey";
 
+export type AuthAccountProviderSnapshot = {
+  name: string;
+  defaultProvider: string;
+  defaultModelId: string;
+  enabledModelIds: string[];
+};
+
 export type AuthAccount = {
   id: string;
   providerId: string;
   label: string;
   kind: AuthAccountKind;
   baseUrl?: string;
+  providerSnapshot?: AuthAccountProviderSnapshot;
   identity?: { field: string; value: string }[];
   createdAt: string;
   updatedAt: string;
@@ -246,13 +254,6 @@ export type AppError = {
   details?: string;
   failedFile?: string;
   writtenFiles?: string[];
-};
-
-export type TestProviderResult = {
-  status: "success" | "failed" | "timeout";
-  exitCode?: number;
-  stdout: string;
-  stderr: string;
 };
 
 export type PiModelInfo = {

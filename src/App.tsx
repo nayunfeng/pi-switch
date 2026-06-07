@@ -40,7 +40,6 @@ import {
   saveAppConfig,
   submitOAuthManualCode,
   cancelOAuthLogin,
-  testProvider as runTestProvider,
 } from "./commands";
 import {
   API_PRESETS,
@@ -48,6 +47,7 @@ import {
   AppConfig,
   AppError,
   AuthAccount,
+  AuthAccountProviderSnapshot,
   CompatConfig,
   createCustomProvider,
   createModel,
@@ -91,7 +91,6 @@ type OAuthState = {
 };
 
 type MainTab = "providers" | "accounts";
-type AccountProviderFilter = "all" | string;
 type AddAccountMode = "oauth" | "apiKey";
 type ApiKeyProviderSource = "official" | "added";
 type ProviderValidationState = Record<string, { attempted?: boolean; touched?: Record<string, boolean> }>;
@@ -192,12 +191,22 @@ function providerApiKeySnapshot(provider: Provider) {
   };
 }
 
+function providerDefaultSnapshot(provider: Provider): AuthAccountProviderSnapshot | undefined {
+  const defaultModelId = provider.defaultModelId.trim();
+  if (!defaultModelId) return undefined;
+  return {
+    name: provider.name.trim(),
+    defaultProvider: piProviderId(provider),
+    defaultModelId,
+    enabledModelIds: enabledModels(provider).map((model) => model.id.trim()).filter(Boolean),
+  };
+}
+
 function App() {
   const [config, setConfig] = useState<AppConfig>(() => normalizeConfig({ schemaVersion: 3, theme: "system", providers: [] }));
   const [accounts, setAccounts] = useState<AuthAccount[]>([]);
   const [activeTab, setActiveTab] = useState<MainTab>("accounts");
   const [selectedAccountId, setSelectedAccountId] = useState<string>();
-  const [accountProviderFilter, setAccountProviderFilter] = useState<AccountProviderFilter>("all");
   const [newOAuthProviderId, setNewOAuthProviderId] = useState<OfficialProviderId>("openai-codex");
   const [newAccountProviderId, setNewAccountProviderId] = useState<string>("openai-codex");
   const [newAccountMode, setNewAccountMode] = useState<AddAccountMode>("oauth");
@@ -250,15 +259,9 @@ function App() {
   const t = useMemo(() => createTranslator(language), [language]);
   const persistedActiveProvider = config.providers.find((provider) => provider.id === config.activeProviderId);
   const activeProvider = providerDraft ?? persistedActiveProvider;
-  const filteredAccounts = useMemo(
-    () =>
-      (accountProviderFilter === "all" ? accounts : accounts.filter((account) => account.providerId === accountProviderFilter))
-        .slice()
-        .sort(compareAccountsForDisplay),
-    [accounts, accountProviderFilter],
-  );
+  const sortedAccounts = useMemo(() => accounts.slice().sort(compareAccountsForDisplay), [accounts]);
   const addedProviderOptions = useMemo(() => config.providers, [config.providers]);
-  const selectedAccount = filteredAccounts.find((account) => account.id === selectedAccountId) ?? filteredAccounts[0];
+  const selectedAccount = sortedAccounts.find((account) => account.id === selectedAccountId) ?? sortedAccounts[0];
   const selectedProviders = useMemo(() => config.providers.filter((provider) => selectedProviderIds.has(provider.id)), [config.providers, selectedProviderIds]);
   const errors = visibleProviderErrors(activeProvider, providerValidation);
 
@@ -273,17 +276,17 @@ function App() {
   }, []);
 
   useEffect(() => {
-    if (!selectedAccountId && filteredAccounts.length > 0) {
-      setSelectedAccountId(filteredAccounts[0].id);
+    if (!selectedAccountId && sortedAccounts.length > 0) {
+      setSelectedAccountId(sortedAccounts[0].id);
       return;
     }
-    if (selectedAccountId && filteredAccounts.length > 0 && !filteredAccounts.some((account) => account.id === selectedAccountId)) {
-      setSelectedAccountId(filteredAccounts[0].id);
+    if (selectedAccountId && sortedAccounts.length > 0 && !sortedAccounts.some((account) => account.id === selectedAccountId)) {
+      setSelectedAccountId(sortedAccounts[0].id);
     }
-    if (filteredAccounts.length === 0) {
+    if (sortedAccounts.length === 0) {
       setSelectedAccountId(undefined);
     }
-  }, [filteredAccounts, selectedAccountId]);
+  }, [sortedAccounts, selectedAccountId]);
 
   useEffect(() => {
     if (!canListenToTauriEvents()) return;
@@ -400,21 +403,8 @@ function App() {
     if (store.accounts.length === 0 && !openedEmptyAccountsRef.current) {
       openedEmptyAccountsRef.current = true;
       setActiveTab("accounts");
-      setAccountProviderFilter("openai-codex");
       setNewOAuthProviderId("openai-codex");
       setNewApiKeyOfficialProviderId("openai-codex");
-    }
-  }
-
-  async function refreshAccountState() {
-    setAccountBusy(true);
-    try {
-      await refreshAccounts();
-      showToast("success", t("accountsRefreshed"));
-    } catch (err) {
-      showError(err);
-    } finally {
-      setAccountBusy(false);
     }
   }
 
@@ -490,7 +480,6 @@ function App() {
   }
 
   function focusAccount(account: AuthAccount) {
-    setAccountProviderFilter(account.providerId);
     if (isOfficialProviderId(account.providerId)) {
       setNewOAuthProviderId(account.providerId);
       setNewApiKeyOfficialProviderId(account.providerId);
@@ -600,23 +589,6 @@ function App() {
     } catch (err) {
       showError(err);
       return undefined;
-    } finally {
-      setProviderBusy(false);
-    }
-  }
-
-  async function testCurrentProvider(providerEntryId = activeProvider?.id) {
-    if (!providerEntryId) return;
-    const savedConfig = await saveCurrentConfig(config, providerEntryId);
-    if (!savedConfig) return;
-    updateConfig({ ...savedConfig, activeProviderId: providerEntryId });
-    setProviderBusy(true);
-    try {
-      const result = await runTestProvider(savedConfig, providerEntryId);
-      const status = result.status;
-      showToast(status === "success" ? "success" : "error", status === "success" ? t("testSuccess") : t("testFailed"));
-    } catch (err) {
-      showError(err);
     } finally {
       setProviderBusy(false);
     }
@@ -746,7 +718,15 @@ function App() {
     }
     setAccountBusy(true);
     try {
-      const account = await createApiKeyAccount(newAccountProviderId, "", newAccountBaseUrl, newAccountApiKey);
+      const selectedAddedProvider =
+        newApiKeyProviderSource === "added" ? addedProviderOptions.find((provider) => provider.id === newApiKeyAddedProviderId) : undefined;
+      const account = await createApiKeyAccount(
+        newAccountProviderId,
+        "",
+        newAccountBaseUrl,
+        newAccountApiKey,
+        selectedAddedProvider ? providerDefaultSnapshot(selectedAddedProvider) : undefined,
+      );
       const applied = await applyAuthAccount(account.id);
       await refreshAccounts();
       focusAccount(applied);
@@ -1002,12 +982,11 @@ function App() {
         {activeTab === "accounts" ? (
           <AccountsPanel
             accounts={accounts}
-            filteredAccounts={filteredAccounts}
+            sortedAccounts={sortedAccounts}
             selectedAccount={selectedAccount}
             activeAccount={accounts.find((account) => account.activeInPi)}
             providers={config.providers}
             addedProviders={addedProviderOptions}
-            providerFilter={accountProviderFilter}
             oauthProviderId={newOAuthProviderId}
             apiKeyProviderSource={newApiKeyProviderSource}
             apiKeyOfficialProviderId={newApiKeyOfficialProviderId}
@@ -1020,7 +999,6 @@ function App() {
             oauthState={oauthState}
             addDialogRef={addAccountDialogRef}
             addMode={newAccountMode}
-            onProviderFilter={setAccountProviderFilter}
             onOAuthProviderId={setNewOAuthProviderId}
             onApiKeyProviderSource={setNewApiKeyProviderSource}
             onApiKeyOfficialProviderId={setNewApiKeyOfficialProviderId}
@@ -1037,12 +1015,10 @@ function App() {
             onCallback={(value) => { setOAuthCallbackInput(value); setOAuthCallbackError(""); }}
             onDialogClose={handleAddDialogClose}
             onAddApiKey={addApiKeyAccount}
-            onRefresh={refreshAccountState}
             onApply={applySelectedAccount}
             onRename={renameSelectedAccount}
             onDuplicate={duplicateSelectedAccount}
             onDelete={deleteSelectedAccount}
-            onTest={testCurrentProvider}
             onSelect={setSelectedAccountId}
             t={t}
           />
@@ -1382,12 +1358,11 @@ function AdvancedButton({ label, help, onClick }: { label: string; help: string;
 
 function AccountsPanel({
   accounts,
-  filteredAccounts,
+  sortedAccounts,
   selectedAccount,
   activeAccount,
   providers,
   addedProviders,
-  providerFilter,
   oauthProviderId,
   apiKeyProviderSource,
   apiKeyOfficialProviderId,
@@ -1400,7 +1375,6 @@ function AccountsPanel({
   oauthState,
   addDialogRef,
   addMode,
-  onProviderFilter,
   onOAuthProviderId,
   onApiKeyProviderSource,
   onApiKeyOfficialProviderId,
@@ -1417,22 +1391,19 @@ function AccountsPanel({
   onCallback,
   onDialogClose,
   onAddApiKey,
-  onRefresh,
   onApply,
   onRename,
   onDuplicate,
   onDelete,
-  onTest,
   onSelect,
   t,
 }: {
   accounts: AuthAccount[];
-  filteredAccounts: AuthAccount[];
+  sortedAccounts: AuthAccount[];
   selectedAccount?: AuthAccount;
   activeAccount?: AuthAccount;
   providers: Provider[];
   addedProviders: Provider[];
-  providerFilter: AccountProviderFilter;
   oauthProviderId: OfficialProviderId;
   apiKeyProviderSource: ApiKeyProviderSource;
   apiKeyOfficialProviderId: OfficialProviderId;
@@ -1461,14 +1432,11 @@ function AccountsPanel({
   onCallback: (value: string) => void;
   onDialogClose: () => void;
   onAddApiKey: () => void;
-  onRefresh: () => void;
   onApply: (account: AuthAccount) => void;
   onRename: (account: AuthAccount) => void;
   onDuplicate: (account: AuthAccount) => void;
   onDelete: (account: AuthAccount) => void;
-  onTest: () => void;
   onSelect: (accountId: string) => void;
-  onProviderFilter: (value: AccountProviderFilter) => void;
   t: ReturnType<typeof createTranslator>;
 }) {
   const oauthSupported = supportsOAuthLogin(oauthProviderId);
@@ -1477,10 +1445,6 @@ function AccountsPanel({
   const oauthAuthUrl = oauthAuthEvent && oauthAuthEvent.type === "auth" ? oauthAuthEvent.url : undefined;
   const oauthDeviceEvent = oauthRunning ? [...oauthState.events].reverse().find((event) => event.type === "deviceCode") : undefined;
   const oauthDeviceCode = oauthDeviceEvent && oauthDeviceEvent.type === "deviceCode" ? oauthDeviceEvent : undefined;
-  const providerFilterOptions = accountProviderFilterOptions(accounts, providers);
-  const activeProviderForAccount = activeAccount
-    ? providers.find((provider) => provider.kind === "official" && provider.authMode === "account" && provider.authAccountId === activeAccount.id)
-    : undefined;
   return (
     <section className="screen" role="tabpanel" aria-label={t("accounts")}>
       <div className="page-head">
@@ -1489,21 +1453,6 @@ function AccountsPanel({
           <p>{t("accountsSubtitle")}</p>
         </div>
         <div className="head-actions">
-          {accounts.length > 0 ? (
-            <div className="scope" role="group" aria-label={t("accountFilter")}>
-              <button type="button" className={providerFilter === "all" ? "active" : ""} onClick={() => onProviderFilter("all")}>
-                {t("allAccounts")}
-              </button>
-              {providerFilterOptions.map((option) => (
-                <button key={option.id} type="button" className={providerFilter === option.id ? "active" : ""} onClick={() => onProviderFilter(option.id)}>
-                  {option.label}
-                </button>
-              ))}
-            </div>
-          ) : null}
-          <button type="button" className="btn icon-only" title={t("refreshAccounts")} aria-label={t("refreshAccounts")} onClick={onRefresh} disabled={busy}>
-            <RefreshCw size={15} />
-          </button>
           <button type="button" className="btn primary" onClick={() => addDialogRef.current?.showModal()} disabled={busy}>
             <Plus size={15} /> {t("addAccount")}
           </button>
@@ -1530,19 +1479,16 @@ function AccountsPanel({
                 <span className="k">{t("provider")}</span>
                 <span className="v">{accountProviderLabel(activeAccount.providerId, providers)}</span>
               </div>
-              {activeProviderForAccount?.defaultModelId ? (
+              {activeAccount.providerSnapshot?.defaultModelId ? (
                 <div className="pi-stat">
                   <span className="k">{t("defaultModel")}</span>
-                  <span className="v">{activeProviderForAccount.defaultModelId}</span>
+                  <span className="v">{activeAccount.providerSnapshot.defaultModelId}</span>
                 </div>
               ) : null}
               <div className="pi-stat">
                 <span className="k">{t("authMode")}</span>
                 <span className="v">{accountAuthLabel(activeAccount)}</span>
               </div>
-              <button type="button" className="btn sm" onClick={onTest} disabled={busy || !activeProviderForAccount}>
-                <ArrowRight size={14} /> {t("test")}
-              </button>
             </div>
           </div>
         ) : (
@@ -1575,27 +1521,23 @@ function AccountsPanel({
               <span>{t("activeInPi")}</span>
               <span className="right">{t("authMode")}</span>
             </div>
-            {filteredAccounts.length === 0 ? (
-              <div className="empty-state">{t("noAccountsMatchFilter")}</div>
-            ) : (
-              <div className="list">
-                {filteredAccounts.map((account) => (
-                  <AccountRow
-                    key={account.id}
-                    account={account}
-                    selected={account.id === selectedAccount?.id}
-                    providers={providers}
-                    busy={busy}
-                    onSelect={onSelect}
-                    onApply={onApply}
-                    onRename={onRename}
-                    onDuplicate={onDuplicate}
-                    onDelete={onDelete}
-                    t={t}
-                  />
-                ))}
-              </div>
-            )}
+            <div className="list">
+              {sortedAccounts.map((account) => (
+                <AccountRow
+                  key={account.id}
+                  account={account}
+                  selected={account.id === selectedAccount?.id}
+                  providers={providers}
+                  busy={busy}
+                  onSelect={onSelect}
+                  onApply={onApply}
+                  onRename={onRename}
+                  onDuplicate={onDuplicate}
+                  onDelete={onDelete}
+                  t={t}
+                />
+              ))}
+            </div>
           </>
         )}
       </div>
@@ -2240,6 +2182,7 @@ function OfficialProviderAdvancedBasics({
   apiKeySecret,
   showApiKey,
   setShowApiKey,
+  showApiKeyInput = true,
   t,
 }: {
   value: NonNullable<Extract<Provider, { kind: "official" }>["advanced"]>;
@@ -2250,9 +2193,10 @@ function OfficialProviderAdvancedBasics({
   apiKeySecret?: boolean;
   showApiKey?: boolean;
   setShowApiKey?: (show: boolean) => void;
+  showApiKeyInput?: boolean;
   t: ReturnType<typeof createTranslator>;
 }) {
-  const apiKeyInput =
+  const apiKeyInput = showApiKeyInput ? (
     apiKeySecret && setShowApiKey ? (
       <SecretField
         value={value.apiKey ?? ""}
@@ -2264,10 +2208,11 @@ function OfficialProviderAdvancedBasics({
         t={t}
       />
     ) : (
-      <LabeledField label={apiKeyLabel} field="apiKey" help={t("providerApiKeyOverrideHelp")} error={apiKeyError} required={apiKeyRequired}>
+      <LabeledField label={apiKeyLabel} field="apiKey" error={apiKeyError} required={apiKeyRequired}>
         <input value={value.apiKey ?? ""} onChange={(event) => onChange({ ...value, apiKey: event.target.value }, "apiKey")} />
       </LabeledField>
-    );
+    )
+  ) : null;
 
   return (
     <div className="grid gap-4">
@@ -2383,7 +2328,7 @@ function ProviderAdvancedForm({
 }) {
   return (
     <div className="grid gap-4 pt-3">
-      {hideBasics ? null : <OfficialProviderAdvancedBasics value={value} onChange={(advanced) => onChange(advanced)} apiKeyLabel={t("providerApiKeyOverride")} t={t} />}
+      {hideBasics ? null : <OfficialProviderAdvancedBasics value={value} onChange={(advanced) => onChange(advanced)} apiKeyLabel={t("apiKey")} showApiKeyInput={false} t={t} />}
       <Checkbox checked={value.authHeader ?? false} onChange={(authHeader) => onChange({ ...value, authHeader })} label={t("authHeader")} help={t("authHeaderHelp")} />
       <HeadersEditor value={value.headers ?? []} onChange={(headers) => onChange({ ...value, headers })} error={fieldError(errors.headers, t)} t={t} />
       <CompatForm value={value.compat ?? {}} onChange={(compat) => onChange({ ...value, compat })} t={t} />
@@ -2858,19 +2803,6 @@ function accountProviderLabel(providerId: string, providers: Provider[]) {
   if (isOfficialProviderId(providerId)) return OFFICIAL_PROVIDER_LABELS[providerId] ?? providerId;
   const provider = providers.find((item) => piProviderId(item) === providerId || item.id === providerId);
   return provider?.name || providerId;
-}
-
-function accountProviderFilterOptions(accounts: AuthAccount[], providers: Provider[]) {
-  const seen = new Set<string>();
-  return accounts
-    .map((account) => account.providerId)
-    .filter((providerId) => {
-      if (seen.has(providerId)) return false;
-      seen.add(providerId);
-      return true;
-    })
-    .sort((left, right) => accountProviderLabel(left, providers).localeCompare(accountProviderLabel(right, providers)))
-    .map((id) => ({ id, label: accountProviderLabel(id, providers) }));
 }
 
 function officialProviderBaseUrl(providerId: OfficialProviderId) {
