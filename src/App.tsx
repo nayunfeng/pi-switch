@@ -2229,12 +2229,11 @@ function OfficialProviderForm({
   const oauthRunning = oauthState.running && oauthState.providerId === provider.providerId;
   const oauthDisabled = oauthState.running || busy;
   const providerAccounts = accounts.filter((account) => account.providerId === provider.providerId);
-  const allAuthOptions: { mode: AuthMode; title: string; desc: string }[] = [
+  const authOptions: { mode: AuthMode; title: string; desc: string }[] = [
     { mode: "existing", title: t("authExisting"), desc: t("oauthLoginHelp") },
     { mode: "account", title: t("authAccount"), desc: t("saveApiKeyAsAccountHelp") },
     { mode: "apiKey", title: t("authApiKey"), desc: t("providerApiKeyOverrideHelp") },
   ];
-  const authOptions = isNewDraft ? allAuthOptions.filter((option) => option.mode === "apiKey") : allAuthOptions;
   return (
     <div className="grid gap-4">
       <Field label={t("provider")}>
@@ -2258,27 +2257,29 @@ function OfficialProviderForm({
           }))}
         />
       </Field>
-      <div>
-        <span className="field-label">{t("authMode")}</span>
-        <div className="auth-cards" role="radiogroup" aria-label={t("authMode")}>
-          {authOptions.map((option) => (
-            <button
-              key={option.mode}
-              type="button"
-              role="radio"
-              aria-checked={provider.authMode === option.mode}
-              className={`auth-card ${provider.authMode === option.mode ? "sel" : ""}`}
-              onClick={() => onChange({ ...provider, authMode: option.mode }, option.mode === "apiKey" ? "apiKey" : option.mode === "account" ? "authAccountId" : "authMode")}
-            >
-              <span className="ac-top">
-                <span className="ac-radio" aria-hidden="true" />
-                <span className="ac-title">{option.title}</span>
-              </span>
-              <span className="ac-desc">{option.desc}</span>
-            </button>
-          ))}
+      {isNewDraft ? null : (
+        <div>
+          <span className="field-label">{t("authMode")}</span>
+          <div className="auth-cards" role="radiogroup" aria-label={t("authMode")}>
+            {authOptions.map((option) => (
+              <button
+                key={option.mode}
+                type="button"
+                role="radio"
+                aria-checked={provider.authMode === option.mode}
+                className={`auth-card ${provider.authMode === option.mode ? "sel" : ""}`}
+                onClick={() => onChange({ ...provider, authMode: option.mode }, option.mode === "apiKey" ? "apiKey" : option.mode === "account" ? "authAccountId" : "authMode")}
+              >
+                <span className="ac-top">
+                  <span className="ac-radio" aria-hidden="true" />
+                  <span className="ac-title">{option.title}</span>
+                </span>
+                <span className="ac-desc">{option.desc}</span>
+              </button>
+            ))}
+          </div>
         </div>
-      </div>
+      )}
       {provider.authMode === "account" ? (
         <Field label={t("account")} error={fieldError(errors.authAccountId, t)} required>
           <div className="editor-grid grid grid-cols-[minmax(0,1fr)_auto] gap-2">
