@@ -203,3 +203,36 @@ Made new provider drafts start with empty name and Base URL, and limited new off
 ### Next Steps
 
 - None - task complete
+
+
+## Session 7: Provider kind default and lock
+
+**Date**: 2026-06-07
+**Task**: Provider kind default and lock
+**Branch**: `master`
+
+### Summary
+
+Made new provider drafts default to official provider kind, allowed kind choice only before save, and rendered persisted provider kind as read-only.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `8808330` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
