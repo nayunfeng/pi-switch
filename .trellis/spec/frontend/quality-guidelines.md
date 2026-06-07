@@ -30,6 +30,62 @@ Questions to answer:
 
 ## Required Patterns
 
+### Scenario: Browser Preview Tauri Event Guard
+
+#### 1. Scope / Trigger
+
+- Trigger: frontend code in `src/App.tsx` or related UI modules that calls Tauri event APIs such as `listen(...)`.
+- Symptom in ordinary Vite/browser preview: `Cannot read properties of undefined (reading 'transformCallback')`.
+
+#### 2. Signatures
+
+- Runtime capability helpers: `isTauriRuntime()` and `canListenToTauriEvents()` in `src/commands.ts`.
+- Event registration: `listen<OAuthLoginEvent>("oauth-login-event", handler)` in `src/App.tsx`.
+
+#### 3. Contracts
+
+- Tauri command calls may require `window.__TAURI_INTERNALS__.invoke`.
+- Tauri event listeners also require `window.__TAURI_INTERNALS__.transformCallback`.
+- Any code path that registers `listen(...)` must guard with `canListenToTauriEvents()` before calling `listen`.
+- Browser-preview URL opening should fall back to `window.open` when Tauri opener is unavailable.
+
+#### 4. Validation & Error Matrix
+
+- Browser preview with no `__TAURI_INTERNALS__` -> skip event registration; no `transformCallback` error.
+- Tauri runtime with `invoke` and `transformCallback` -> event registration works.
+- Browser preview opening an OAuth URL -> use `window.open`.
+- Tauri runtime opening an OAuth URL -> use `openUrl`.
+
+#### 5. Good/Base/Bad Cases
+
+- Good: ordinary browser refresh renders the app shell and surfaces normal IPC-unavailable toast messages without crashing.
+- Base: Tauri desktop startup still receives OAuth login events.
+- Bad: calling `listen(...)` unconditionally during React mount.
+
+#### 6. Tests Required
+
+- Run `npm run build`.
+- For related account/auth UI changes, run `npm run test:auth`.
+- If touching event registration again, inspect ordinary browser refresh for absence of `transformCallback` console errors.
+
+#### 7. Wrong vs Correct
+
+##### Wrong
+
+```typescript
+listen("oauth-login-event", handler);
+```
+
+##### Correct
+
+```typescript
+if (canListenToTauriEvents()) {
+  listen("oauth-login-event", handler);
+}
+```
+
+---
+
 ### Scenario: WSLg WebKitGTK Window Presentation Fallback
 
 #### 1. Scope / Trigger

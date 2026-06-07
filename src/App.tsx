@@ -26,10 +26,12 @@ import {
 } from "lucide-react";
 import {
   applyAuthAccount,
+  canListenToTauriEvents,
   createApiKeyAccount,
   deleteAuthAccount,
   duplicateAuthAccount,
   fetchCustomProviderModels,
+  isTauriRuntime,
   loginOfficialProviderOAuth,
   loadAuthAccounts,
   listPiModels,
@@ -69,6 +71,14 @@ import {
 import { createTranslator, systemLanguage } from "./i18n";
 import { Select } from "./Select";
 
+function openExternalUrl(url: string) {
+  if (isTauriRuntime()) {
+    return openUrl(url);
+  }
+  window.open(url, "_blank", "noopener,noreferrer");
+  return Promise.resolve();
+}
+
 type ToastState = {
   kind: "success" | "error" | "info";
   message: string;
@@ -83,7 +93,7 @@ type OAuthState = {
 type MainTab = "providers" | "accounts";
 type AccountProviderFilter = "all" | string;
 type AddAccountMode = "oauth" | "apiKey";
-type ApiKeyProviderSource = "official" | "custom";
+type ApiKeyProviderSource = "official" | "added";
 type ProviderValidationState = Record<string, { attempted?: boolean; touched?: Record<string, boolean> }>;
 
 type ModelDraft = {
@@ -167,6 +177,21 @@ function officialProviderWithApiKeyAuth(provider: Extract<Provider, { kind: "off
   return { ...provider, authMode: "apiKey", authAccountId: undefined };
 }
 
+function providerApiKeySnapshot(provider: Provider) {
+  if (provider.kind === "official") {
+    return {
+      providerId: piProviderId(provider),
+      baseUrl: provider.advanced?.baseUrl ?? officialProviderBaseUrl(provider.providerId),
+      apiKey: provider.apiKey || provider.advanced?.apiKey || "",
+    };
+  }
+  return {
+    providerId: piProviderId(provider),
+    baseUrl: provider.baseUrl,
+    apiKey: provider.apiKey,
+  };
+}
+
 function App() {
   const [config, setConfig] = useState<AppConfig>(() => normalizeConfig({ schemaVersion: 3, theme: "system", providers: [] }));
   const [accounts, setAccounts] = useState<AuthAccount[]>([]);
@@ -178,7 +203,7 @@ function App() {
   const [newAccountMode, setNewAccountMode] = useState<AddAccountMode>("oauth");
   const [newApiKeyProviderSource, setNewApiKeyProviderSource] = useState<ApiKeyProviderSource>("official");
   const [newApiKeyOfficialProviderId, setNewApiKeyOfficialProviderId] = useState<OfficialProviderId>("openai-codex");
-  const [newApiKeyCustomProviderId, setNewApiKeyCustomProviderId] = useState("");
+  const [newApiKeyAddedProviderId, setNewApiKeyAddedProviderId] = useState("");
   const [newAccountBaseUrl, setNewAccountBaseUrl] = useState(officialProviderBaseUrl("openai-codex"));
   const [newAccountApiKey, setNewAccountApiKey] = useState("");
   const [showAccountKey, setShowAccountKey] = useState(false);
@@ -232,7 +257,7 @@ function App() {
         .sort(compareAccountsForDisplay),
     [accounts, accountProviderFilter],
   );
-  const customProviderOptions = useMemo(() => config.providers.filter((provider): provider is Extract<Provider, { kind: "custom" }> => provider.kind === "custom"), [config.providers]);
+  const addedProviderOptions = useMemo(() => config.providers, [config.providers]);
   const selectedAccount = filteredAccounts.find((account) => account.id === selectedAccountId) ?? filteredAccounts[0];
   const selectedProviders = useMemo(() => config.providers.filter((provider) => selectedProviderIds.has(provider.id)), [config.providers, selectedProviderIds]);
   const errors = visibleProviderErrors(activeProvider, providerValidation);
@@ -261,6 +286,7 @@ function App() {
   }, [filteredAccounts, selectedAccountId]);
 
   useEffect(() => {
+    if (!canListenToTauriEvents()) return;
     let mounted = true;
     let unlisten: (() => void) | undefined;
     listen<OAuthLoginEvent>("oauth-login-event", (event) => {
@@ -274,7 +300,7 @@ function App() {
         const urlToOpen = event.payload.type === "auth" ? event.payload.url : event.payload.type === "deviceCode" ? event.payload.verificationUri : undefined;
         if (urlToOpen && !openedOAuthUrlsRef.current.has(urlToOpen)) {
           openedOAuthUrlsRef.current.add(urlToOpen);
-          openUrl(urlToOpen).catch((err) => showError(err));
+          openExternalUrl(urlToOpen).catch((err) => showError(err));
         }
         if (event.payload.type === "manualCode") {
           setOAuthManualCodeInput("");
@@ -311,21 +337,22 @@ function App() {
       setNewAccountApiKey("");
       return;
     }
-    const selectedCustomProvider = customProviderOptions.find((provider) => provider.id === newApiKeyCustomProviderId) ?? customProviderOptions[0];
-    if (!selectedCustomProvider) {
-      setNewApiKeyCustomProviderId("");
+    const selectedAddedProvider = addedProviderOptions.find((provider) => provider.id === newApiKeyAddedProviderId) ?? addedProviderOptions[0];
+    if (!selectedAddedProvider) {
+      setNewApiKeyAddedProviderId("");
       setNewAccountProviderId("");
       setNewAccountBaseUrl("");
       setNewAccountApiKey("");
       return;
     }
-    if (selectedCustomProvider.id !== newApiKeyCustomProviderId) {
-      setNewApiKeyCustomProviderId(selectedCustomProvider.id);
+    if (selectedAddedProvider.id !== newApiKeyAddedProviderId) {
+      setNewApiKeyAddedProviderId(selectedAddedProvider.id);
     }
-    setNewAccountProviderId(piProviderId(selectedCustomProvider));
-    setNewAccountBaseUrl(selectedCustomProvider.baseUrl);
-    setNewAccountApiKey(selectedCustomProvider.apiKey);
-  }, [customProviderOptions, newApiKeyCustomProviderId, newApiKeyOfficialProviderId, newApiKeyProviderSource]);
+    const snapshot = providerApiKeySnapshot(selectedAddedProvider);
+    setNewAccountProviderId(snapshot.providerId);
+    setNewAccountBaseUrl(snapshot.baseUrl);
+    setNewAccountApiKey(snapshot.apiKey);
+  }, [addedProviderOptions, newApiKeyAddedProviderId, newApiKeyOfficialProviderId, newApiKeyProviderSource]);
 
   useEffect(() => {
     document.documentElement.lang = language;
@@ -979,12 +1006,12 @@ function App() {
             selectedAccount={selectedAccount}
             activeAccount={accounts.find((account) => account.activeInPi)}
             providers={config.providers}
-            customProviders={customProviderOptions}
+            addedProviders={addedProviderOptions}
             providerFilter={accountProviderFilter}
             oauthProviderId={newOAuthProviderId}
             apiKeyProviderSource={newApiKeyProviderSource}
             apiKeyOfficialProviderId={newApiKeyOfficialProviderId}
-            apiKeyCustomProviderId={newApiKeyCustomProviderId}
+            apiKeyAddedProviderId={newApiKeyAddedProviderId}
             apiKeyProviderId={newAccountProviderId}
             baseUrl={newAccountBaseUrl}
             apiKey={newAccountApiKey}
@@ -997,7 +1024,7 @@ function App() {
             onOAuthProviderId={setNewOAuthProviderId}
             onApiKeyProviderSource={setNewApiKeyProviderSource}
             onApiKeyOfficialProviderId={setNewApiKeyOfficialProviderId}
-            onApiKeyCustomProviderId={setNewApiKeyCustomProviderId}
+            onApiKeyAddedProviderId={setNewApiKeyAddedProviderId}
             onBaseUrl={setNewAccountBaseUrl}
             onApiKey={setNewAccountApiKey}
             onShowApiKey={setShowAccountKey}
@@ -1359,12 +1386,12 @@ function AccountsPanel({
   selectedAccount,
   activeAccount,
   providers,
-  customProviders,
+  addedProviders,
   providerFilter,
   oauthProviderId,
   apiKeyProviderSource,
   apiKeyOfficialProviderId,
-  apiKeyCustomProviderId,
+  apiKeyAddedProviderId,
   apiKeyProviderId,
   baseUrl,
   apiKey,
@@ -1377,7 +1404,7 @@ function AccountsPanel({
   onOAuthProviderId,
   onApiKeyProviderSource,
   onApiKeyOfficialProviderId,
-  onApiKeyCustomProviderId,
+  onApiKeyAddedProviderId,
   onBaseUrl,
   onApiKey,
   onShowApiKey,
@@ -1404,12 +1431,12 @@ function AccountsPanel({
   selectedAccount?: AuthAccount;
   activeAccount?: AuthAccount;
   providers: Provider[];
-  customProviders: Extract<Provider, { kind: "custom" }>[];
+  addedProviders: Provider[];
   providerFilter: AccountProviderFilter;
   oauthProviderId: OfficialProviderId;
   apiKeyProviderSource: ApiKeyProviderSource;
   apiKeyOfficialProviderId: OfficialProviderId;
-  apiKeyCustomProviderId: string;
+  apiKeyAddedProviderId: string;
   apiKeyProviderId: string;
   baseUrl: string;
   apiKey: string;
@@ -1421,7 +1448,7 @@ function AccountsPanel({
   onOAuthProviderId: (value: OfficialProviderId) => void;
   onApiKeyProviderSource: (value: ApiKeyProviderSource) => void;
   onApiKeyOfficialProviderId: (value: OfficialProviderId) => void;
-  onApiKeyCustomProviderId: (value: string) => void;
+  onApiKeyAddedProviderId: (value: string) => void;
   onBaseUrl: (value: string) => void;
   onApiKey: (value: string) => void;
   onShowApiKey: (value: boolean) => void;
@@ -1626,7 +1653,7 @@ function AccountsPanel({
                         </button>
                       </div>
                     </Field>
-                    <button type="button" className="primary flex items-center justify-center gap-2" onClick={() => { void openUrl(oauthAuthUrl); }}>
+                    <button type="button" className="primary flex items-center justify-center gap-2" onClick={() => { void openExternalUrl(oauthAuthUrl); }}>
                       <ExternalLink size={15} /> {t("openInBrowser")}
                     </button>
                     <Field label={t("oauthCallbackLabel")}>
@@ -1652,7 +1679,7 @@ function AccountsPanel({
                     <Field label={t("oauthVerificationPage")}>
                       <div className="flex items-center gap-2">
                         <span className="font-mono text-xs break-all" style={{ color: "var(--muted)" }}>{oauthDeviceCode.verificationUri}</span>
-                        <button type="button" className="primary flex items-center gap-2 whitespace-nowrap" onClick={() => { void openUrl(oauthDeviceCode.verificationUri); }}>
+                        <button type="button" className="primary flex items-center gap-2 whitespace-nowrap" onClick={() => { void openExternalUrl(oauthDeviceCode.verificationUri); }}>
                           <ExternalLink size={15} /> {t("openInBrowser")}
                         </button>
                       </div>
@@ -1675,8 +1702,8 @@ function AccountsPanel({
               <button type="button" className={apiKeyProviderSource === "official" ? "primary" : ""} onClick={() => onApiKeyProviderSource("official")}>
                 {t("official")}
               </button>
-              <button type="button" className={apiKeyProviderSource === "custom" ? "primary" : ""} onClick={() => onApiKeyProviderSource("custom")} disabled={customProviders.length === 0}>
-                {t("custom")}
+              <button type="button" className={apiKeyProviderSource === "added" ? "primary" : ""} onClick={() => onApiKeyProviderSource("added")} disabled={addedProviders.length === 0}>
+                {t("addedProviders")}
               </button>
             </div>
             {apiKeyProviderSource === "official" ? (
@@ -1694,11 +1721,11 @@ function AccountsPanel({
             ) : (
               <Field label={t("provider")}>
                 <Select
-                  value={apiKeyCustomProviderId}
+                  value={apiKeyAddedProviderId}
                   aria-label={t("provider")}
-                  disabled={customProviders.length === 0}
-                  onChange={onApiKeyCustomProviderId}
-                  options={customProviders.map((provider) => ({ value: provider.id, label: provider.name }))}
+                  disabled={addedProviders.length === 0}
+                  onChange={onApiKeyAddedProviderId}
+                  options={addedProviders.map((provider) => ({ value: provider.id, label: provider.name }))}
                 />
               </Field>
             )}
@@ -1706,7 +1733,7 @@ function AccountsPanel({
               <input value={baseUrl} onChange={(event) => onBaseUrl(event.target.value)} />
             </Field>
             <SecretField value={apiKey} onChange={onApiKey} showKey={showApiKey} setShowKey={onShowApiKey} required t={t} />
-            <div className="muted">{apiKeyProviderSource === "custom" ? t("apiKeyCustomProviderHelp") : t("apiKeyOfficialProviderHelp")}</div>
+            <div className="muted">{apiKeyProviderSource === "added" ? t("apiKeyAddedProviderHelp") : t("apiKeyOfficialProviderHelp")}</div>
             <div className="flex justify-end gap-2">
               <button type="button" onClick={() => addDialogRef.current?.close()}>{t("cancel")}</button>
               <button type="button" className="primary flex items-center gap-2" onClick={onAddApiKey} disabled={busy || !apiKeyProviderId.trim() || !baseUrl.trim() || !apiKey.trim()}>

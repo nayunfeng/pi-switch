@@ -3,10 +3,21 @@ import type { AccountsStore, AppConfig, AppError, AuthAccount, OfficialProviderI
 
 type TauriInternals = {
   invoke?: typeof invoke;
+  transformCallback?: (callback?: unknown, once?: boolean) => number;
 };
 
+export function isTauriRuntime() {
+  const internals = (window as Window & { __TAURI_INTERNALS__?: TauriInternals }).__TAURI_INTERNALS__;
+  return Boolean(internals?.invoke);
+}
+
+export function canListenToTauriEvents() {
+  const internals = (window as Window & { __TAURI_INTERNALS__?: TauriInternals }).__TAURI_INTERNALS__;
+  return Boolean(internals?.invoke && internals.transformCallback);
+}
+
 function tauriInvoke<T>(command: string, args?: Record<string, unknown>) {
-  if (!(window as Window & { __TAURI_INTERNALS__?: TauriInternals }).__TAURI_INTERNALS__?.invoke) {
+  if (!isTauriRuntime()) {
     throw {
       code: "TAURI_IPC_UNAVAILABLE",
       message: "Tauri IPC is not available",
