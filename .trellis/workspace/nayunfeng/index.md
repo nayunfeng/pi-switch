@@ -8,7 +8,7 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 10
+- **Total Sessions**: 11
 - **Last Active**: 2026-06-08
 <!-- @@@/auto:current-status -->
 
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~337 | Active |
+| `journal-1.md` | ~393 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 11 | 2026-06-08 | 供应商列表选择操作改造 | `5285a74`,  `df2a577` | `master` |
 | 10 | 2026-06-08 | Remove official provider auth mode UI | `ecd4c9b` | `master` |
 | 9 | 2026-06-08 | Provider official draft advanced basics | `d77c054` | `master` |
 | 8 | 2026-06-07 | Inline official draft provider fields | `dc88491` | `master` |

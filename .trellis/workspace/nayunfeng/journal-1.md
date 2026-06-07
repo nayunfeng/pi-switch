@@ -335,3 +335,59 @@ Moved official provider advanced baseUrl, api type, and provider API key overrid
 ### Next Steps
 
 - None - task complete
+
+
+## Session 11: 供应商列表选择操作改造
+
+**Date**: 2026-06-08
+**Task**: 供应商列表选择操作改造
+**Branch**: `master`
+
+### Summary
+
+完成供应商列表 checkbox 选择、批量删除、单选复制、显式编辑，并移除供应商测试输出链路。
+
+### Main Changes
+
+### Summary
+
+完成供应商面板选择式操作改造：供应商行增加 checkbox，复制/删除改为基于勾选项，复制仅允许单选，行内增加编辑按钮，并禁止点击整行打开编辑。
+
+### Main Changes
+
+- 供应商列表新增选择状态 `selectedProviderIds`，删除和复制都从勾选集合取目标。
+- 删除确认改为显示已选供应商数量和名称，删除后清理选择状态和相关校验状态。
+- 供应商行移除测试按钮，工具栏移除查看输出，删除测试输出弹窗、输出状态、输出样式和相关文案。
+- 保留账号页测试入口，但不再维护供应商输出窗口状态。
+- PRD 验收项已全部标记完成。
+
+### Verification
+
+- `npm run build` passed.
+- `npm run test:auth` passed.
+- `git diff --check -- src/App.tsx src/i18n.ts src/styles.css` passed with only CRLF warnings.
+- User manually verified the UI behavior.
+
+### Spec Update
+
+No `.trellis/spec` update needed: this was a frontend-only interaction cleanup with no new command/API, storage, or cross-layer contract.
+
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `5285a74` | (see git log) |
+| `df2a577` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
