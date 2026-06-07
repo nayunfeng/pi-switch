@@ -22,8 +22,9 @@
 - Built-in and custom providers are creation templates only; saved API Key accounts must keep their own `baseUrl` and credential snapshot.
 - When an API Key account is created from an existing provider, it must also keep a safe provider snapshot: `defaultProvider`, `defaultModelId`, and enabled model IDs.
 - Creating an API Key account saves the account only. It must not call `applyAuthAccount`, bind a provider, or write Pi `auth.json` / `models.json` / `settings.json` until the user clicks the account row's explicit enable action.
-- Applying an API Key account with a provider snapshot updates Pi `settings.json` default fields from that snapshot: `defaultProvider`, `defaultModel`, and `enabledModels`.
-- Applying an API Key account without a provider snapshot preserves the previous settings behavior and must not infer defaults from the current provider list.
+- Applying an account with a provider snapshot updates Pi `settings.json` default fields from that snapshot: `defaultProvider`, `defaultModel`, and `enabledModels`.
+- Applying an official account without a provider snapshot still updates Pi `settings.json.defaultProvider` to the account `providerId`. If the backend can match the account to a provider in Pi Switch `config.json`, it also updates `defaultModel` and `enabledModels` from that provider config.
+- Applying a custom API Key account without a provider snapshot preserves previous settings behavior and must not infer defaults from the current provider list.
 - Account rows should expose an explicit enable action even for the currently active account, because re-enabling rewrites Pi files and syncs refreshed credentials.
 - Official API Key accounts write credentials through Pi `auth.json` and write endpoint overrides to `models.json` when `baseUrl` is present.
 - Custom API Key accounts do not write `auth.json`; they write `baseUrl` and API key into the matching `models.json.providers[providerId]` entry, and write `settings.json` defaults only when a provider snapshot exists.
@@ -42,14 +43,17 @@
 - Good: create an API Key account from a custom provider, then rename or edit the custom provider; the account still applies the original snapshot.
 - Base: create an API Key account from an official provider; default `baseUrl` is prefilled and can be overridden before save.
 - Base: create an API Key account and see it in the list without changing current Pi auth until the user clicks enable.
+- Base: re-enable an official API Key account with no snapshot after `settings.json.defaultProvider` was manually changed; the backend restores `defaultProvider` from the account and restores `defaultModel` when matching provider config exists.
 - Bad: store only a reference to a provider config and read current provider `baseUrl`/`apiKey` when applying the account.
 - Bad: call `applyAuthAccount(account.id)` immediately after `createApiKeyAccount(...)` succeeds.
+- Bad: skip `settings.json` updates for official accounts just because `providerSnapshot` is missing.
 
 ### 6. Tests Required
 
 - Account view serialization exposes `baseUrl` and never exposes `credential`.
 - API Key account application preserves existing provider model entries in `models.json`.
 - API Key account created from an existing provider applies the provider snapshot to Pi `settings.json`.
+- Official API Key account without a provider snapshot applies `settings.json.defaultProvider` from the account and, when provider config is present, `defaultModel` / `enabledModels` from that config.
 - Custom API Key account without a provider snapshot writes `models.json` and does not touch `auth.json` or `settings.json`.
 - Frontend build must pass after changing account command payloads or account view types.
 - Frontend account creation flows must save and refresh the account list without invoking `applyAuthAccount`.

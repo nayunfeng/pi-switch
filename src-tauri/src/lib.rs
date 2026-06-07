@@ -658,6 +658,22 @@ fn paths_for_frontend(paths: &Paths) -> ResolvedPaths {
     }
 }
 
+fn load_app_config_from_path(path: &Path) -> AppResult<AppConfig> {
+    if !path.exists() {
+        return Ok(default_config());
+    }
+
+    let text = fs::read_to_string(path).map_err(|err| {
+        AppError::new("CONFIG_PARSE_FAILED", "读取 GUI 配置失败").with_details(err.to_string())
+    })?;
+    let config: AppConfig = serde_json::from_str(&text).map_err(|err| {
+        AppError::new("CONFIG_PARSE_FAILED", "GUI 配置 JSON 无法解析").with_details(err.to_string())
+    })?;
+    let config = normalize_app_config(config);
+    validate_app_config(&config)?;
+    Ok(config)
+}
+
 fn default_accounts_store() -> AccountsStore {
     AccountsStore {
         version: ACCOUNTS_VERSION,
@@ -1599,44 +1615,148 @@ fn build_account_models_json(account: &AuthAccount, path: &Path) -> AppResult<Op
     }
 }
 
-fn build_account_settings_json(account: &AuthAccount, path: &Path) -> AppResult<Option<Value>> {
-    if account.kind != AuthAccountKind::ApiKey {
-        return Ok(None);
-    }
-    let Some(snapshot) = &account.provider_snapshot else {
+fn build_account_settings_json_for_config(
+    account: &AuthAccount,
+    path: &Path,
+    config: Option<&AppConfig>,
+) -> AppResult<Option<Value>> {
+    let Some(defaults) = account_settings_defaults(account, config) else {
         return Ok(None);
     };
-    let default_provider = snapshot.default_provider.trim();
-    let default_model = snapshot.default_model_id.trim();
-    if default_provider.is_empty() || default_model.is_empty() {
-        return Ok(None);
-    }
+    build_account_settings_json_with_defaults(path, &defaults)
+}
+
+fn build_account_settings_json_with_defaults(
+    path: &Path,
+    defaults: &AccountSettingsDefaults,
+) -> AppResult<Option<Value>> {
     let mut settings = read_json_object(path, "PI_SETTINGS_WRITE_FAILED", "settings.json")?;
     settings.insert(
         "defaultProvider".to_string(),
-        Value::String(default_provider.to_string()),
+        Value::String(defaults.default_provider.clone()),
     );
-    settings.insert(
-        "defaultModel".to_string(),
-        Value::String(default_model.to_string()),
-    );
-    let enabled_model_ids = if snapshot.enabled_model_ids.is_empty() {
-        vec![Value::String(default_model.to_string())]
-    } else {
-        snapshot
+
+    if let Some(default_model) = &defaults.default_model {
+        settings.insert(
+            "defaultModel".to_string(),
+            Value::String(default_model.clone()),
+        );
+        let enabled_model_ids = if defaults.enabled_model_ids.is_empty() {
+            vec![Value::String(default_model.clone())]
+        } else {
+            defaults
+                .enabled_model_ids
+                .iter()
+                .map(|model_id| Value::String(model_id.clone()))
+                .collect::<Vec<_>>()
+        };
+        settings.insert("enabledModels".to_string(), Value::Array(enabled_model_ids));
+    }
+
+    Ok(Some(Value::Object(settings)))
+}
+
+#[derive(Debug)]
+struct AccountSettingsDefaults {
+    default_provider: String,
+    default_model: Option<String>,
+    enabled_model_ids: Vec<String>,
+}
+
+fn account_settings_defaults(
+    account: &AuthAccount,
+    config: Option<&AppConfig>,
+) -> Option<AccountSettingsDefaults> {
+    if let Some(snapshot) = &account.provider_snapshot {
+        let default_provider = non_empty_string(snapshot.default_provider.as_str())?;
+        let default_model = non_empty_string(snapshot.default_model_id.as_str());
+        let enabled_model_ids = snapshot
             .enabled_model_ids
             .iter()
-            .filter_map(|model_id| {
-                let trimmed = model_id.trim();
-                (!trimmed.is_empty()).then(|| Value::String(trimmed.to_string()))
+            .filter_map(|model_id| non_empty_string(model_id.as_str()))
+            .collect();
+        return Some(AccountSettingsDefaults {
+            default_provider,
+            default_model,
+            enabled_model_ids,
+        });
+    }
+
+    if !account_provider_writes_auth(account) {
+        return None;
+    }
+    let default_provider = non_empty_string(account.provider_id.as_str())?;
+    let (default_model, enabled_model_ids) = config
+        .and_then(|config| account_provider_defaults_from_config(account, config))
+        .unwrap_or((None, Vec::new()));
+    Some(AccountSettingsDefaults {
+        default_provider,
+        default_model,
+        enabled_model_ids,
+    })
+}
+
+fn account_provider_defaults_from_config(
+    account: &AuthAccount,
+    config: &AppConfig,
+) -> Option<(Option<String>, Vec<String>)> {
+    let provider = find_account_provider_in_config(account, config)?;
+    let default_model = provider_default_model_id(provider)?;
+    let enabled_model_ids = provider_enabled_model_ids(provider);
+    Some((Some(default_model), enabled_model_ids))
+}
+
+fn find_account_provider_in_config<'a>(
+    account: &AuthAccount,
+    config: &'a AppConfig,
+) -> Option<&'a Provider> {
+    let matches_account =
+        |provider: &&Provider| provider_id(provider).trim() == account.provider_id.trim();
+    config
+        .providers
+        .iter()
+        .filter(matches_account)
+        .find(|provider| {
+            matches!(
+                provider,
+                Provider::Official(official)
+                    if official.auth_account_id.as_deref() == Some(account.id.as_str())
+            )
+        })
+        .or_else(|| {
+            config.active_provider_id.as_deref().and_then(|active_id| {
+                config
+                    .providers
+                    .iter()
+                    .filter(matches_account)
+                    .find(|provider| provider_entry_id(provider) == active_id)
             })
-            .collect::<Vec<_>>()
+        })
+        .or_else(|| config.providers.iter().find(matches_account))
+}
+
+fn provider_default_model_id(provider: &Provider) -> Option<String> {
+    let default_model = match provider {
+        Provider::Official(provider) => provider.default_model_id.as_str(),
+        Provider::Custom(provider) => provider.default_model_id.as_str(),
     };
-    settings.insert(
-        "enabledModels".to_string(),
-        Value::Array(enabled_model_ids),
-    );
-    Ok(Some(Value::Object(settings)))
+    non_empty_string(default_model)
+}
+
+fn provider_enabled_model_ids(provider: &Provider) -> Vec<String> {
+    let models = match provider {
+        Provider::Official(provider) => &provider.models,
+        Provider::Custom(provider) => &provider.models,
+    };
+    enabled_models(models)
+        .into_iter()
+        .filter_map(|model| non_empty_string(model.id.as_str()))
+        .collect()
+}
+
+fn non_empty_string(value: &str) -> Option<String> {
+    let trimmed = value.trim();
+    (!trimmed.is_empty()).then(|| trimmed.to_string())
 }
 
 fn upsert_auth_account(
@@ -1764,21 +1884,7 @@ fn clear_deleted_account_bindings_in_config_file(path: &Path, account_id: &str) 
 #[tauri::command]
 fn load_app_config() -> AppResult<LoadAppConfigResult> {
     let paths = resolve_paths()?;
-    if !paths.app_config_file.exists() {
-        return Ok(LoadAppConfigResult {
-            config: default_config(),
-            resolved_paths: paths_for_frontend(&paths),
-        });
-    }
-
-    let text = fs::read_to_string(&paths.app_config_file).map_err(|err| {
-        AppError::new("CONFIG_PARSE_FAILED", "读取 GUI 配置失败").with_details(err.to_string())
-    })?;
-    let config: AppConfig = serde_json::from_str(&text).map_err(|err| {
-        AppError::new("CONFIG_PARSE_FAILED", "GUI 配置 JSON 无法解析").with_details(err.to_string())
-    })?;
-    let config = normalize_app_config(config);
-    validate_app_config(&config)?;
+    let config = load_app_config_from_path(&paths.app_config_file)?;
     Ok(LoadAppConfigResult {
         config,
         resolved_paths: paths_for_frontend(&paths),
@@ -1939,9 +2045,18 @@ fn apply_account_to_pi(input: ApplyAuthAccountInput, paths: &Paths) -> AppResult
             &[],
         )?;
     }
-    if let Some(settings_json) =
-        build_account_settings_json(&store.accounts[index], &paths.pi_settings_file)?
+    let settings_config = if store.accounts[index].provider_snapshot.is_none()
+        && account_provider_writes_auth(&store.accounts[index])
     {
+        Some(load_app_config_from_path(&paths.app_config_file)?)
+    } else {
+        None
+    };
+    if let Some(settings_json) = build_account_settings_json_for_config(
+        &store.accounts[index],
+        &paths.pi_settings_file,
+        settings_config.as_ref(),
+    )? {
         write_pi_file(
             &paths.pi_settings_file,
             &settings_json,
@@ -2175,8 +2290,8 @@ const models = registry.getAvailable()
   }}));
 console.log(JSON.stringify(models));
 "#,
-        package_index = serde_json::to_string(&package_index.display().to_string())
-            .unwrap_or_default(),
+        package_index =
+            serde_json::to_string(&package_index.display().to_string()).unwrap_or_default(),
         provider_id = serde_json::to_string(&input.provider_id).unwrap_or_default(),
         api_key = serde_json::to_string(&input.api_key.filter(|key| !key.trim().is_empty()))
             .unwrap_or_else(|_| "null".to_string())
@@ -2404,8 +2519,8 @@ await auth.login(providerId, {{
 }});
 emit({{ type: "success", message: `Logged in to ${{provider.name}}` }});
 "#,
-        package_index = serde_json::to_string(&package_index.display().to_string())
-            .unwrap_or_default(),
+        package_index =
+            serde_json::to_string(&package_index.display().to_string()).unwrap_or_default(),
         provider_id = serde_json::to_string(provider_id).unwrap_or_default(),
         auth_path = serde_json::to_string(&auth_path.display().to_string()).unwrap_or_default(),
         login_id = serde_json::to_string(login_id).unwrap_or_default(),
@@ -3043,9 +3158,8 @@ async fn find_pi_command_path() -> AppResult<PathBuf> {
                 .with_details(String::from_utf8_lossy(&output.stderr).to_string()),
         );
     }
-    let path = select_pi_command_path(&String::from_utf8_lossy(&output.stdout)).ok_or_else(|| {
-        AppError::new("PI_COMMAND_NOT_FOUND", "当前 GUI 环境无法找到 pi 命令")
-    })?;
+    let path = select_pi_command_path(&String::from_utf8_lossy(&output.stdout))
+        .ok_or_else(|| AppError::new("PI_COMMAND_NOT_FOUND", "当前 GUI 环境无法找到 pi 命令"))?;
     let canonical = fs::canonicalize(&path).map_err(|err| {
         AppError::new("PI_COMMAND_NOT_FOUND", "无法解析 pi 命令路径")
             .with_details(format!("{path}: {err}"))
@@ -3149,10 +3263,8 @@ async fn resolve_pi_package_index(pi_path: &Path) -> AppResult<PathBuf> {
             if fallback.exists() {
                 return Ok(fallback);
             }
-            return Err(
-                AppError::new("PI_PACKAGE_NOT_FOUND", "无法定位 Pi 模块")
-                    .with_details(fallback.display().to_string()),
-            );
+            return Err(AppError::new("PI_PACKAGE_NOT_FOUND", "无法定位 Pi 模块")
+                .with_details(fallback.display().to_string()));
         }
         Err(AppError::new("PI_PACKAGE_NOT_FOUND", "无法定位 Pi 模块")
             .with_details(pi_path.display().to_string()))
@@ -3201,7 +3313,14 @@ fn pi_dist_index_from_shim(shim_contents: &str) -> Option<PathBuf> {
 #[cfg_attr(not(windows), allow(dead_code))]
 fn strip_shim_prefix(token: &str) -> &str {
     let mut rest = token;
-    for prefix in ["%~dp0\\", "%~dp0/", "%dp0%\\", "%dp0%/", "$basedir/", "$basedir\\"] {
+    for prefix in [
+        "%~dp0\\",
+        "%~dp0/",
+        "%dp0%\\",
+        "%dp0%/",
+        "$basedir/",
+        "$basedir\\",
+    ] {
         if let Some(stripped) = rest.strip_prefix(prefix) {
             rest = stripped;
         }
@@ -4112,6 +4231,78 @@ mod tests {
     }
 
     #[test]
+    fn applying_official_api_key_account_without_snapshot_updates_settings_from_config() {
+        let dir = tempfile::tempdir().unwrap();
+        let app_config_dir = dir.path().join("PiSwitch");
+        let pi_agent_dir = dir.path().join(".pi").join("agent");
+        fs::create_dir_all(&app_config_dir).unwrap();
+        fs::create_dir_all(&pi_agent_dir).unwrap();
+        fs::write(pi_agent_dir.join("auth.json"), r#"{}"#).unwrap();
+        fs::write(
+            pi_agent_dir.join("settings.json"),
+            r#"{ "theme": "dark", "defaultProvider": "wrong-provider", "defaultModel": "wrong-model", "enabledModels": ["wrong-model"] }"#,
+        )
+        .unwrap();
+        fs::write(pi_agent_dir.join("models.json"), r#"{}"#).unwrap();
+        let account = AuthAccount {
+            id: "openai_key".to_string(),
+            provider_id: "openai".to_string(),
+            label: "OpenAI Key".to_string(),
+            kind: AuthAccountKind::ApiKey,
+            base_url: Some("https://api.openai.com/v1".to_string()),
+            provider_snapshot: None,
+            credential: create_api_key_credential("sk-account"),
+            created_at: "1".to_string(),
+            updated_at: "1".to_string(),
+            last_applied_at: None,
+            active_in_pi: false,
+        };
+        save_accounts_store_to_path(
+            &app_config_dir.join("accounts.json"),
+            &AccountsStore {
+                version: ACCOUNTS_VERSION,
+                accounts: vec![account],
+            },
+        )
+        .unwrap();
+        atomic_write_json(
+            &app_config_dir.join("config.json"),
+            &AppConfig {
+                schema_version: SCHEMA_VERSION,
+                language: None,
+                theme: ThemeMode::System,
+                active_provider_id: Some("provider_official".to_string()),
+                providers: vec![official_provider()],
+            },
+        )
+        .unwrap();
+        let paths = Paths {
+            app_config_dir: app_config_dir.clone(),
+            app_config_file: app_config_dir.join("config.json"),
+            accounts_file: app_config_dir.join("accounts.json"),
+            pi_agent_dir: pi_agent_dir.clone(),
+            pi_models_file: pi_agent_dir.join("models.json"),
+            pi_auth_file: pi_agent_dir.join("auth.json"),
+            pi_settings_file: pi_agent_dir.join("settings.json"),
+        };
+
+        apply_account_to_pi(
+            ApplyAuthAccountInput {
+                account_id: "openai_key".to_string(),
+            },
+            &paths,
+        )
+        .unwrap();
+
+        let settings: Value =
+            serde_json::from_str(&fs::read_to_string(paths.pi_settings_file).unwrap()).unwrap();
+        assert_eq!(settings["theme"], "dark");
+        assert_eq!(settings["defaultProvider"], "openai");
+        assert_eq!(settings["defaultModel"], "gpt-5.5");
+        assert_eq!(settings["enabledModels"], json!(["gpt-5.5"]));
+    }
+
+    #[test]
     fn applying_api_key_account_with_provider_snapshot_updates_settings_defaults() {
         let dir = tempfile::tempdir().unwrap();
         let app_config_dir = dir.path().join("PiSwitch");
@@ -4143,10 +4334,7 @@ mod tests {
                 name: "Relay".to_string(),
                 default_provider: "Relay".to_string(),
                 default_model_id: "deepseek chat".to_string(),
-                enabled_model_ids: vec![
-                    "deepseek chat".to_string(),
-                    "deepseek coder".to_string(),
-                ],
+                enabled_model_ids: vec!["deepseek chat".to_string(), "deepseek coder".to_string()],
             }),
             credential: create_api_key_credential("relay-key"),
             created_at: "1".to_string(),
@@ -4185,7 +4373,10 @@ mod tests {
         assert_eq!(settings["theme"], "dark");
         assert_eq!(settings["defaultProvider"], "Relay");
         assert_eq!(settings["defaultModel"], "deepseek chat");
-        assert_eq!(settings["enabledModels"], json!(["deepseek chat", "deepseek coder"]));
+        assert_eq!(
+            settings["enabledModels"],
+            json!(["deepseek chat", "deepseek coder"])
+        );
     }
 
     #[test]
@@ -4429,8 +4620,7 @@ mod tests {
             "oauth_test",
             Path::new("/tmp/oauth auth/manual-code.txt"),
         );
-        assert!(script
-            .contains("import(pathToFileURL(\"/tmp/pi package/dist/index.js\").href)"));
+        assert!(script.contains("import(pathToFileURL(\"/tmp/pi package/dist/index.js\").href)"));
         assert!(script.contains("import { pathToFileURL } from \"node:url\";"));
         assert!(!script.contains("file://"));
         assert!(script.contains("\"/tmp/oauth auth/auth.json\""));
@@ -4541,14 +4731,22 @@ mod tests {
             )
             .unwrap();
             let token = guard.cancel.clone();
-            assert!(sessions.cancels.lock().unwrap().contains_key("oauth_cancel"));
+            assert!(sessions
+                .cancels
+                .lock()
+                .unwrap()
+                .contains_key("oauth_cancel"));
             assert!(!token.is_cancelled());
             cancel_oauth_login_in_session(&sessions, "oauth_cancel");
             assert!(token.is_cancelled());
             token
         };
         // Guard drop clears both manual-code and cancel registrations.
-        assert!(!sessions.cancels.lock().unwrap().contains_key("oauth_cancel"));
+        assert!(!sessions
+            .cancels
+            .lock()
+            .unwrap()
+            .contains_key("oauth_cancel"));
         assert!(token.is_cancelled());
     }
 
@@ -4728,9 +4926,7 @@ openai    o3-mini                200K     100K     yes       no
         let index = pi_dist_index_from_shim(shim).unwrap();
         assert_eq!(
             index,
-            PathBuf::from(
-                "node_modules\\@earendil-works\\pi-coding-agent\\dist\\index.js"
-            )
+            PathBuf::from("node_modules\\@earendil-works\\pi-coding-agent\\dist\\index.js")
         );
         // Joined onto the shim directory this reconstructs the real layout.
         let base = Path::new("C:\\Users\\92176\\AppData\\Roaming\\npm");
@@ -4754,7 +4950,10 @@ openai    o3-mini                200K     100K     yes       no
 
     #[test]
     fn pi_dist_index_from_shim_returns_none_without_cli_token() {
-        assert_eq!(pi_dist_index_from_shim("@echo off\r\nrem nothing here\r\n"), None);
+        assert_eq!(
+            pi_dist_index_from_shim("@echo off\r\nrem nothing here\r\n"),
+            None
+        );
         // A `cli.js` not inside a `dist` directory must not match.
         assert_eq!(
             pi_dist_index_from_shim("node \"%dp0%\\node_modules\\foo\\bin\\cli.js\" %*"),
@@ -4764,7 +4963,10 @@ openai    o3-mini                200K     100K     yes       no
 
     #[test]
     fn replace_cli_with_index_preserves_slash_style() {
-        assert_eq!(replace_cli_with_index("a\\dist\\cli.js"), "a\\dist\\index.js");
+        assert_eq!(
+            replace_cli_with_index("a\\dist\\cli.js"),
+            "a\\dist\\index.js"
+        );
         assert_eq!(replace_cli_with_index("a/dist/cli.js"), "a/dist/index.js");
         // Tokens that do not end in cli.js are returned unchanged.
         assert_eq!(replace_cli_with_index("a/dist/index.js"), "a/dist/index.js");
