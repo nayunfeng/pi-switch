@@ -42,6 +42,7 @@ import {
 } from "./commands";
 import {
   API_PRESETS,
+  ApiType,
   AppConfig,
   AppError,
   AuthAccount,
@@ -122,12 +123,51 @@ const OFFICIAL_PROVIDER_BASE_URLS: Partial<Record<OfficialProviderId, string>> =
   "cloudflare-ai-gateway": "https://gateway.ai.cloudflare.com/v1/{account}/{gateway}",
 };
 
+const OFFICIAL_PROVIDER_DEFAULT_APIS: Partial<Record<OfficialProviderId, ApiType>> = {
+  "amazon-bedrock": "bedrock-converse-stream",
+  "ant-ling": "anthropic-messages",
+  anthropic: "anthropic-messages",
+  google: "google-generative-ai",
+  "google-vertex": "google-vertex",
+  openai: "openai-responses",
+  "azure-openai-responses": "azure-openai-responses",
+  "openai-codex": "openai-codex-responses",
+  mistral: "mistral-conversations",
+};
+
 function createEmptyCustomProviderDraft(): Extract<Provider, { kind: "custom" }> {
   return { ...createCustomProvider(), name: "", baseUrl: "" };
 }
 
 function createEmptyOfficialProviderDraft(): Extract<Provider, { kind: "official" }> {
-  return { ...createOfficialProvider(), name: "", authMode: "apiKey", authAccountId: undefined };
+  const provider = { ...createOfficialProvider(), name: "", authMode: "apiKey" as const, authAccountId: undefined };
+  return {
+    ...provider,
+    advanced: {
+      ...provider.advanced,
+      baseUrl: officialProviderBaseUrl(provider.providerId),
+      api: officialProviderDefaultApi(provider.providerId),
+    },
+  };
+}
+
+function officialProviderDefaultApi(providerId: OfficialProviderId): ApiType | "" {
+  return OFFICIAL_PROVIDER_DEFAULT_APIS[providerId] ?? "";
+}
+
+function officialProviderAdvancedForSelection(provider: Extract<Provider, { kind: "official" }>, providerId: OfficialProviderId) {
+  const current = provider.advanced ?? {};
+  const previousApi = officialProviderDefaultApi(provider.providerId);
+  const nextApi = officialProviderDefaultApi(providerId);
+  const previousBaseUrl = officialProviderBaseUrl(provider.providerId);
+  const nextBaseUrl = officialProviderBaseUrl(providerId);
+  const canAutoSetBaseUrl = !current.baseUrl || current.baseUrl === previousBaseUrl;
+  const canAutoSetApi = !current.api || current.api === previousApi;
+  return {
+    ...current,
+    baseUrl: canAutoSetBaseUrl ? nextBaseUrl : current.baseUrl,
+    api: canAutoSetApi ? nextApi : current.api,
+  };
 }
 
 function App() {
@@ -1136,7 +1176,13 @@ function App() {
         </button>
         <h3 id="advanced-dialog-title" className="m-0 mb-4 text-base font-semibold">{t("providerAdvanced")}</h3>
         {activeProvider?.kind === "official" ? (
-          <ProviderAdvancedForm value={activeProvider.advanced ?? {}} onChange={(advanced) => updateActiveProviderField({ ...activeProvider, advanced }, "headers")} errors={errors} t={t} />
+          <ProviderAdvancedForm
+            value={activeProvider.advanced ?? {}}
+            onChange={(advanced) => updateActiveProviderField({ ...activeProvider, advanced }, "headers")}
+            errors={errors}
+            hideBasics={providerDraft?.id === activeProvider.id}
+            t={t}
+          />
         ) : null}
         {activeProvider?.kind === "custom" ? (
           <div className="grid gap-4">
@@ -1335,7 +1381,7 @@ function Field({ label, error, required, children }: { label: string; error?: st
   );
 }
 
-function LabeledField({ label, field, help, required, children }: { label: string; field?: string; help?: string; required?: boolean; children: React.ReactNode }) {
+function LabeledField({ label, field, help, error, required, children }: { label: string; field?: string; help?: string; error?: string; required?: boolean; children: React.ReactNode }) {
   return (
     <label>
       <span>
@@ -1344,6 +1390,7 @@ function LabeledField({ label, field, help, required, children }: { label: strin
         {field ? <code className="field-code">{field}</code> : null}
       </span>
       {children}
+      {error ? <div className="field-error">{error}</div> : null}
     </label>
   );
 }
@@ -2249,6 +2296,7 @@ function OfficialProviderForm({
             onChange({
               ...provider,
               providerId,
+              advanced: isNewDraft ? officialProviderAdvancedForSelection(provider, providerId) : provider.advanced,
               authAccountId: undefined,
               authMode: isNewDraft ? "apiKey" : provider.authMode,
               models: [],
@@ -2264,7 +2312,13 @@ function OfficialProviderForm({
       {isNewDraft ? (
         <OfficialProviderAdvancedBasics
           value={provider.advanced ?? {}}
-          onChange={(advanced) => onChange({ ...provider, advanced }, "headers")}
+          onChange={(advanced, field) => onChange({ ...provider, advanced, apiKey: advanced.apiKey ?? "" }, field === "apiKey" ? "apiKey" : field)}
+          apiKeyLabel={t("apiKey")}
+          apiKeyError={fieldError(errors.apiKey, t)}
+          apiKeyRequired
+          apiKeySecret
+          showApiKey={showKey}
+          setShowApiKey={setShowKey}
           t={t}
         />
       ) : null}
@@ -2310,7 +2364,7 @@ function OfficialProviderForm({
           </div>
         </Field>
       ) : null}
-      {provider.authMode === "apiKey" ? (
+      {provider.authMode === "apiKey" && !isNewDraft ? (
         <div className="grid gap-2">
           <SecretField value={provider.apiKey} onChange={(apiKey) => onChange({ ...provider, apiKey }, "apiKey")} showKey={showKey} setShowKey={setShowKey} error={fieldError(errors.apiKey, t)} required t={t} />
           <div className="flex flex-wrap items-center gap-2">
@@ -2343,23 +2397,50 @@ function OfficialProviderForm({
 function OfficialProviderAdvancedBasics({
   value,
   onChange,
+  apiKeyLabel,
+  apiKeyError,
+  apiKeyRequired,
+  apiKeySecret,
+  showApiKey,
+  setShowApiKey,
   t,
 }: {
   value: NonNullable<Extract<Provider, { kind: "official" }>["advanced"]>;
-  onChange: (value: NonNullable<Extract<Provider, { kind: "official" }>["advanced"]>) => void;
+  onChange: (value: NonNullable<Extract<Provider, { kind: "official" }>["advanced"]>, field: "baseUrl" | "api" | "apiKey") => void;
+  apiKeyLabel: string;
+  apiKeyError?: string;
+  apiKeyRequired?: boolean;
+  apiKeySecret?: boolean;
+  showApiKey?: boolean;
+  setShowApiKey?: (show: boolean) => void;
   t: ReturnType<typeof createTranslator>;
 }) {
+  const apiKeyInput =
+    apiKeySecret && setShowApiKey ? (
+      <SecretField
+        value={value.apiKey ?? ""}
+        onChange={(apiKey) => onChange({ ...value, apiKey }, "apiKey")}
+        showKey={showApiKey ?? false}
+        setShowKey={setShowApiKey}
+        error={apiKeyError}
+        required={apiKeyRequired}
+        t={t}
+      />
+    ) : (
+      <LabeledField label={apiKeyLabel} field="apiKey" help={t("providerApiKeyOverrideHelp")} error={apiKeyError} required={apiKeyRequired}>
+        <input value={value.apiKey ?? ""} onChange={(event) => onChange({ ...value, apiKey: event.target.value }, "apiKey")} />
+      </LabeledField>
+    );
+
   return (
     <div className="grid gap-4">
       <div className="editor-grid grid grid-cols-2 gap-4">
         <Field label={t("baseUrl")}>
-          <input value={value.baseUrl ?? ""} onChange={(event) => onChange({ ...value, baseUrl: event.target.value })} />
+          <input value={value.baseUrl ?? ""} onChange={(event) => onChange({ ...value, baseUrl: event.target.value }, "baseUrl")} />
         </Field>
-        <ApiSelect value={value.api ?? ""} onChange={(api) => onChange({ ...value, api })} label={t("apiType")} />
+        <ApiSelect value={value.api ?? ""} onChange={(api) => onChange({ ...value, api }, "api")} label={t("apiType")} />
       </div>
-      <LabeledField label={t("providerApiKeyOverride")} field="apiKey" help={t("providerApiKeyOverrideHelp")}>
-        <input value={value.apiKey ?? ""} onChange={(event) => onChange({ ...value, apiKey: event.target.value })} />
-      </LabeledField>
+      {apiKeyInput}
     </div>
   );
 }
@@ -2454,16 +2535,18 @@ function ProviderAdvancedForm({
   value,
   onChange,
   errors,
+  hideBasics,
   t,
 }: {
   value: NonNullable<Extract<Provider, { kind: "official" }>["advanced"]>;
   onChange: (value: NonNullable<Extract<Provider, { kind: "official" }>["advanced"]>) => void;
   errors: Record<string, string>;
+  hideBasics?: boolean;
   t: ReturnType<typeof createTranslator>;
 }) {
   return (
     <div className="grid gap-4 pt-3">
-      <OfficialProviderAdvancedBasics value={value} onChange={onChange} t={t} />
+      {hideBasics ? null : <OfficialProviderAdvancedBasics value={value} onChange={(advanced) => onChange(advanced)} apiKeyLabel={t("providerApiKeyOverride")} t={t} />}
       <Checkbox checked={value.authHeader ?? false} onChange={(authHeader) => onChange({ ...value, authHeader })} label={t("authHeader")} help={t("authHeaderHelp")} />
       <HeadersEditor value={value.headers ?? []} onChange={(headers) => onChange({ ...value, headers })} error={fieldError(errors.headers, t)} t={t} />
       <CompatForm value={value.compat ?? {}} onChange={(compat) => onChange({ ...value, compat })} t={t} />
