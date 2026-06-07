@@ -624,18 +624,6 @@ label > span,
   padding: 10px;
 }
 
-.output {
-  min-height: 220px;
-  max-height: 260px;
-  overflow: auto;
-  white-space: pre-wrap;
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  background: var(--terminal);
-  color: #e8f5ee;
-  padding: 12px;
-}
-
 .dialog {
   width: min(560px, calc(100vw - 32px));
   border: 1px solid var(--border);
@@ -1669,6 +1657,12 @@ button {
   flex-wrap: wrap;
 }
 
+.provider-selection-count {
+  color: var(--faint);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
 .provider-table {
   display: grid;
   gap: 4px;
@@ -1676,7 +1670,7 @@ button {
 
 .provider-table-head {
   display: grid;
-  grid-template-columns: minmax(220px, 1fr) 120px minmax(160px, 0.7fr) 120px;
+  grid-template-columns: 44px 34px minmax(220px, 1fr) 120px minmax(160px, 0.7fr) 120px;
   gap: 12px;
   padding: 0 12px 6px;
   color: var(--faint);
@@ -1697,7 +1691,7 @@ button {
 .prov-row {
   min-height: 52px;
   display: grid;
-  grid-template-columns: 34px minmax(220px, 1fr) 120px minmax(160px, 0.7fr) 120px;
+  grid-template-columns: 44px 34px minmax(220px, 1fr) 120px minmax(160px, 0.7fr) 120px;
   align-items: center;
   gap: 12px;
   padding: 8px 10px;
@@ -1706,7 +1700,6 @@ button {
   background: transparent;
   box-shadow: none;
   text-align: left;
-  cursor: pointer;
   transition: background 0.14s ease, border-color 0.14s ease;
 }
 
@@ -1722,6 +1715,11 @@ button {
 
 .dark .prov-row.active {
   background: var(--surface-hover);
+}
+
+.prov-select {
+  display: grid;
+  place-items: center;
 }
 
 .prov-row .pi-dot {
@@ -2044,12 +2042,17 @@ button {
   }
 
   .prov-row {
-    grid-template-columns: 34px minmax(0, 1fr) auto;
+    grid-template-columns: 28px 34px minmax(0, 1fr) auto;
     grid-template-areas:
-      "avatar main action"
-      "avatar kind action"
-      "avatar model action";
+      "select avatar main action"
+      "select avatar kind action"
+      "select avatar model action";
     align-items: start;
+  }
+
+  .prov-select {
+    grid-area: select;
+    padding-top: 3px;
   }
 
   .prov-row .pi-dot {

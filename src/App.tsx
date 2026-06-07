@@ -4,7 +4,6 @@ import { openUrl } from "@tauri-apps/plugin-opener";
 import {
   ArrowRight,
   Check,
-  CirclePlay,
   CircleHelp,
   Copy,
   Download,
@@ -13,6 +12,7 @@ import {
   ExternalLink,
   Moon,
   MoreVertical,
+  Pencil,
   Plus,
   RefreshCw,
   Save,
@@ -61,7 +61,6 @@ import {
   piProviderId,
   PiModelInfo,
   Provider,
-  ResolvedPaths,
   supportsOAuthLogin,
   ThemeMode,
   ThinkingLevel,
@@ -69,11 +68,6 @@ import {
 } from "./domain";
 import { createTranslator, systemLanguage } from "./i18n";
 import { Select } from "./Select";
-
-type TestState = {
-  status: "idle" | "running" | "success" | "failed" | "timeout";
-  output: string;
-};
 
 type ToastState = {
   kind: "success" | "error" | "info";
@@ -189,11 +183,9 @@ function App() {
   const [newAccountApiKey, setNewAccountApiKey] = useState("");
   const [showAccountKey, setShowAccountKey] = useState(false);
   const [accountBusy, setAccountBusy] = useState(false);
-  const [paths, setPaths] = useState<ResolvedPaths>();
   const [loading, setLoading] = useState(true);
   const [showKey, setShowKey] = useState(false);
   const [toast, setToast] = useState<ToastState>();
-  const [testState, setTestState] = useState<TestState>({ status: "idle", output: "" });
   const [candidateModels, setCandidateModels] = useState<string[]>([]);
   const [selectedCandidates, setSelectedCandidates] = useState<Set<string>>(new Set());
   const [modelSearch, setModelSearch] = useState("");
@@ -206,7 +198,6 @@ function App() {
   const deleteDialogRef = useRef<HTMLDialogElement>(null);
   const modelDialogRef = useRef<HTMLDialogElement>(null);
   const providerAdvancedDialogRef = useRef<HTMLDialogElement>(null);
-  const outputDialogRef = useRef<HTMLDialogElement>(null);
   const addAccountDialogRef = useRef<HTMLDialogElement>(null);
   const renameDialogRef = useRef<HTMLDialogElement>(null);
   const deleteAccountDialogRef = useRef<HTMLDialogElement>(null);
@@ -219,6 +210,7 @@ function App() {
   const [providerBusy, setProviderBusy] = useState(false);
   const [providerDrawerOpen, setProviderDrawerOpen] = useState(false);
   const [providerDraft, setProviderDraft] = useState<Provider>();
+  const [selectedProviderIds, setSelectedProviderIds] = useState<Set<string>>(new Set());
   const [providerValidation, setProviderValidation] = useState<ProviderValidationState>({});
   const openedOAuthUrlsRef = useRef<Set<string>>(new Set());
   const oauthInlineActiveRef = useRef(false);
@@ -242,13 +234,13 @@ function App() {
   );
   const customProviderOptions = useMemo(() => config.providers.filter((provider): provider is Extract<Provider, { kind: "custom" }> => provider.kind === "custom"), [config.providers]);
   const selectedAccount = filteredAccounts.find((account) => account.id === selectedAccountId) ?? filteredAccounts[0];
+  const selectedProviders = useMemo(() => config.providers.filter((provider) => selectedProviderIds.has(provider.id)), [config.providers, selectedProviderIds]);
   const errors = visibleProviderErrors(activeProvider, providerValidation);
 
   useEffect(() => {
     loadAppConfig()
       .then((result) => {
         setConfig(normalizeConfig(result.config));
-        setPaths(result.resolvedPaths);
       })
       .catch((err) => showError(err))
       .finally(() => setLoading(false));
@@ -438,7 +430,27 @@ function App() {
     updateActiveProvider(provider);
   }
 
-  function selectProvider(providerId: string) {
+  useEffect(() => {
+    const persistedIds = new Set(config.providers.map((provider) => provider.id));
+    setSelectedProviderIds((current) => {
+      const next = new Set([...current].filter((id) => persistedIds.has(id)));
+      return next.size === current.size ? current : next;
+    });
+  }, [config.providers]);
+
+  function toggleProviderSelected(providerId: string, selected: boolean) {
+    setSelectedProviderIds((current) => {
+      const next = new Set(current);
+      if (selected) {
+        next.add(providerId);
+      } else {
+        next.delete(providerId);
+      }
+      return next;
+    });
+  }
+
+  function editProvider(providerId: string) {
     setProviderDraft(undefined);
     updateConfig({ ...config, activeProviderId: providerId });
     setShowKey(false);
@@ -494,11 +506,14 @@ function App() {
   }
 
   function duplicateProvider() {
-    if (!activeProvider) return;
+    if (selectedProviderIds.size !== 1) return;
+    const selectedProviderId = [...selectedProviderIds][0];
+    const selectedProvider = config.providers.find((provider) => provider.id === selectedProviderId);
+    if (!selectedProvider) return;
     const clone: Provider = {
-      ...structuredClone(activeProvider),
+      ...structuredClone(selectedProvider),
       id: `provider_${crypto.getRandomValues(new Uint32Array(1))[0].toString(16).padStart(6, "0").slice(0, 6)}`,
-      name: `${activeProvider.name} Copy`,
+      name: `${selectedProvider.name} Copy`,
     };
     setProviderValidation((state) => ({ ...state, [clone.id]: {} }));
     setProviderDraft(clone);
@@ -507,21 +522,20 @@ function App() {
   }
 
   function deleteProvider() {
-    if (!activeProvider) return;
-    if (providerDraft?.id === activeProvider.id) {
-      setProviderDraft(undefined);
-      closeProviderDrawer();
-      deleteDialogRef.current?.close();
-      return;
-    }
-    const providers = config.providers.filter((provider) => provider.id !== activeProvider.id);
+    if (selectedProviderIds.size === 0) return;
+    const idsToDelete = new Set(selectedProviderIds);
+    const providers = config.providers.filter((provider) => !idsToDelete.has(provider.id));
     setProviderValidation((state) => {
       const next = { ...state };
-      delete next[activeProvider.id];
+      idsToDelete.forEach((id) => delete next[id]);
       return next;
     });
-    updateConfig({ ...config, activeProviderId: providers[0]?.id, providers });
-    closeProviderDrawer();
+    const activeProviderDeleted = config.activeProviderId ? idsToDelete.has(config.activeProviderId) : false;
+    updateConfig({ ...config, activeProviderId: activeProviderDeleted ? providers[0]?.id : config.activeProviderId, providers });
+    setSelectedProviderIds(new Set());
+    if (activeProvider?.id && idsToDelete.has(activeProvider.id)) {
+      closeProviderDrawer();
+    }
     deleteDialogRef.current?.close();
   }
 
@@ -570,18 +584,11 @@ function App() {
     if (!savedConfig) return;
     updateConfig({ ...savedConfig, activeProviderId: providerEntryId });
     setProviderBusy(true);
-    setTestState({ status: "running", output: 'pi -p "ping"\n' });
     try {
       const result = await runTestProvider(savedConfig, providerEntryId);
       const status = result.status;
-      const exitLine = result.exitCode === undefined ? "" : `exitCode: ${result.exitCode}\n`;
-      setTestState({
-        status,
-        output: `${exitLine}stdout:\n${result.stdout || ""}\n\nstderr:\n${result.stderr || ""}`,
-      });
       showToast(status === "success" ? "success" : "error", status === "success" ? t("testSuccess") : t("testFailed"));
     } catch (err) {
-      setTestState({ status: "failed", output: formatError(err, t) });
       showError(err);
     } finally {
       setProviderBusy(false);
@@ -793,7 +800,6 @@ function App() {
       await deleteAuthAccount(deleteAccountTarget.id);
       const loaded = await loadAppConfig();
       setConfig(normalizeConfig(loaded.config));
-      setPaths(loaded.resolvedPaths);
       await refreshAccounts();
       showToast("success", t("accountDeleted"));
     } catch (err) {
@@ -1029,9 +1035,10 @@ function App() {
             selectedCandidates={selectedCandidates}
             modelSearch={modelSearch}
             fetching={fetching}
-            testState={testState}
             drawerOpen={providerDrawerOpen}
-            onSelectProvider={selectProvider}
+            selectedProviderIds={selectedProviderIds}
+            onToggleProviderSelected={toggleProviderSelected}
+            onEditProvider={editProvider}
             onCloseDrawer={closeProviderDrawer}
             onAddProvider={addProvider}
             onDuplicateProvider={duplicateProvider}
@@ -1050,44 +1057,16 @@ function App() {
             onRemoveModel={removeModel}
             onUpdateDefaultModel={updateDefaultModel}
             onSave={() => saveCurrentConfig(config, activeProvider?.id)}
-            onTest={(providerEntryId) => {
-              if (providerEntryId) {
-                selectProvider(providerEntryId);
-              }
-              testCurrentProvider(providerEntryId ?? activeProvider?.id);
-            }}
-            onViewOutput={() => outputDialogRef.current?.showModal()}
             t={t}
           />
         )}
       </div>
 
-      <dialog ref={outputDialogRef} className="dialog model-dialog p-4" aria-labelledby="output-dialog-title">
-        <button type="button" className="dialog-close icon-button" aria-label={t("close")} onClick={() => outputDialogRef.current?.close()}>
-          <X size={16} />
-        </button>
-        <div className="mb-3 flex items-center justify-between gap-3">
-          <h3 id="output-dialog-title" className="m-0 text-base font-semibold">{t("output")}</h3>
-          <span className="muted">{testState.status === "idle" ? t("idleOutput") : t(testState.status)}</span>
-        </div>
-        <pre className="output">{testState.output || t("idleOutput")}</pre>
-        {paths ? (
-          <details className="muted">
-            <summary>{t("paths")}</summary>
-            <div className="model-id mt-2 grid gap-1">
-              <span>{paths.appConfigFile}</span>
-              <span>{paths.piModelsFile}</span>
-              <span>{paths.piAuthFile}</span>
-              <span>{paths.piSettingsFile}</span>
-            </div>
-          </details>
-        ) : null}
-      </dialog>
-
       <dialog ref={deleteDialogRef} className="dialog p-4" aria-labelledby="delete-provider-title">
         <p id="delete-provider-title">
-          {t("deleteConfirmPrefix")} "{activeProvider?.name}"?
+          {t("deleteSelectedProvidersConfirm")} ({selectedProviders.length})?
         </p>
+        {selectedProviders.length > 0 ? <p className="muted">{selectedProviders.map((provider) => provider.name).join(", ")}</p> : null}
         <div className="flex justify-end gap-2">
           <button type="button" onClick={() => deleteDialogRef.current?.close()}>
             {t("cancel")}
@@ -1838,9 +1817,10 @@ function ProvidersPanel({
   selectedCandidates,
   modelSearch,
   fetching,
-  testState,
   drawerOpen,
-  onSelectProvider,
+  selectedProviderIds,
+  onToggleProviderSelected,
+  onEditProvider,
   onCloseDrawer,
   onAddProvider,
   onDuplicateProvider,
@@ -1859,8 +1839,6 @@ function ProvidersPanel({
   onRemoveModel,
   onUpdateDefaultModel,
   onSave,
-  onTest,
-  onViewOutput,
   t,
 }: {
   config: AppConfig;
@@ -1877,9 +1855,10 @@ function ProvidersPanel({
   selectedCandidates: Set<string>;
   modelSearch: string;
   fetching: boolean;
-  testState: TestState;
   drawerOpen: boolean;
-  onSelectProvider: (id: string) => void;
+  selectedProviderIds: Set<string>;
+  onToggleProviderSelected: (id: string, selected: boolean) => void;
+  onEditProvider: (id: string) => void;
   onCloseDrawer: () => void;
   onAddProvider: () => void;
   onDuplicateProvider: () => void;
@@ -1898,8 +1877,6 @@ function ProvidersPanel({
   onRemoveModel: (model: ModelConfig) => void;
   onUpdateDefaultModel: (defaultModelId: string) => void;
   onSave: () => void;
-  onTest: (providerEntryId?: string) => void;
-  onViewOutput: () => void;
   t: ReturnType<typeof createTranslator>;
 }) {
   const officialProviders = config.providers.filter((provider) => provider.kind === "official");
@@ -1907,21 +1884,23 @@ function ProvidersPanel({
   const isApplied = (provider: Provider) => providerIsApplied(provider, accounts);
   const isPersistedActiveProvider = activeProvider ? config.providers.some((provider) => provider.id === activeProvider.id) : false;
   const isNewProviderDraft = activeProvider ? !isPersistedActiveProvider : false;
-  const renderProviderRow = (provider: Provider) => (
+  const selectedProviderCount = selectedProviderIds.size;
+  const renderProviderRow = (provider: Provider) => {
+    const checked = selectedProviderIds.has(provider.id);
+    return (
     <div
       key={provider.id}
       className={`prov-row ${provider.id === config.activeProviderId ? "active" : ""}`}
-      role="button"
-      tabIndex={0}
-      aria-pressed={provider.id === config.activeProviderId}
-      onClick={() => onSelectProvider(provider.id)}
-      onKeyDown={(event) => {
-        if (event.key === "Enter" || event.key === " ") {
-          event.preventDefault();
-          onSelectProvider(provider.id);
-        }
-      }}
     >
+      <span className="prov-select">
+        <input
+          type="checkbox"
+          className="w-auto"
+          aria-label={`${t("select")} ${provider.name}`}
+          checked={checked}
+          onChange={(event) => onToggleProviderSelected(provider.id, event.target.checked)}
+        />
+      </span>
       <span className={`pi-dot avatar ${providerAvatarClass(piProviderId(provider))}`} aria-hidden="true">{avatarInitial(provider.name)}</span>
       <span className="prov-main">
         <span className="pn">
@@ -1932,13 +1911,14 @@ function ProvidersPanel({
       </span>
       <span className="prov-kind">{provider.kind === "official" ? t("official") : t("custom")}</span>
       <span className="prov-model">{provider.defaultModelId || t("noDefaultModel")}</span>
-      <span className="prov-row-actions" onClick={(event) => event.stopPropagation()}>
-        <button type="button" className="btn sm" onClick={() => onTest(provider.id)} disabled={providerBusy}>
-          <CirclePlay size={14} /> {t("test")}
+      <span className="prov-row-actions">
+        <button type="button" className="btn sm" onClick={() => onEditProvider(provider.id)}>
+          <Pencil size={14} /> {t("edit")}
         </button>
       </span>
     </div>
-  );
+    );
+  };
   const providerDrawer =
     activeProvider && drawerOpen ? (
       <div className="provider-drawer-backdrop" role="presentation" onClick={onCloseDrawer}>
@@ -2069,7 +2049,7 @@ function ProvidersPanel({
 
             <div className="form-footer">
               <div className="left">
-                <span className="muted" style={{ fontSize: "11.5px" }}>{testState.status === "idle" ? t("autoStaged") : t(testState.status)}</span>
+                <span className="muted" style={{ fontSize: "11.5px" }}>{t("autoStaged")}</span>
               </div>
               <div className="right">
                 <button type="button" className="btn" onClick={onSave} disabled={providerBusy}>
@@ -2111,26 +2091,22 @@ function ProvidersPanel({
               <button type="button" className="btn primary" onClick={onAddProvider}>
                 <Plus size={15} /> {t("newProvider")}
               </button>
-              {activeProvider && isPersistedActiveProvider ? (
-                <button type="button" className="btn" onClick={onDuplicateProvider}>
-                  <Copy size={15} /> {t("duplicate")}
-                </button>
-              ) : null}
+              <button type="button" className="btn" onClick={onDuplicateProvider} disabled={selectedProviderCount !== 1}>
+                <Copy size={15} /> {t("duplicate")}
+              </button>
             </div>
             <div className="right">
-              <button type="button" className="btn sm ghost" onClick={onViewOutput}>
-                {t("viewOutput")}
+              <span className="provider-selection-count">{t("selectedCount")}: {selectedProviderCount}</span>
+              <button type="button" className="btn sm danger-text" onClick={onOpenDelete} disabled={selectedProviderCount === 0}>
+                <Trash2 size={14} /> {t("delete")}
               </button>
-              {activeProvider && isPersistedActiveProvider ? (
-                <button type="button" className="btn sm danger-text" onClick={onOpenDelete}>
-                  <Trash2 size={14} /> {t("delete")}
-                </button>
-              ) : null}
             </div>
           </div>
 
           <div className="provider-table" aria-label={t("providers")}>
             <div className="provider-table-head">
+              <span>{t("select")}</span>
+              <span aria-hidden="true" />
               <span>{t("provider")}</span>
               <span>{t("kind")}</span>
               <span>{t("defaultModel")}</span>
