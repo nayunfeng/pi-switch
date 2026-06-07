@@ -1565,48 +1565,60 @@ function AccountsPanel({
         )}
       </dialog>
 
-      <section className="grid gap-3">
-        <div className="flex flex-wrap items-center justify-between gap-3">
-          <SectionTitle>{t("savedAccounts")}</SectionTitle>
-          <label className="filter-control">
-            <span>{t("accountFilter")}</span>
-            <select value={providerFilter} onChange={(event) => onProviderFilter(event.target.value as AccountProviderFilter)}>
-              <option value="all">{t("allAccounts")}</option>
-              {providerFilterOptions.map((option) => (
-                <option key={option.id} value={option.id}>
-                  {option.label}
-                </option>
-              ))}
-            </select>
-          </label>
-        </div>
-        {filteredAccounts.length === 0 ? <div className="empty-state">{t("noAccounts")}</div> : null}
-        <div className="model-list">
-          {filteredAccounts.map((account) => (
-            <div
-              key={account.id}
-              className={`account-row ${account.id === selectedAccount?.id ? "active" : ""}`}
-              onClick={() => onSelect(account.id)}
-            >
-              <strong>{account.label}</strong>
-              <span className="model-id">{accountIdentityText(account) || account.baseUrl || account.providerId}</span>
-              <span className="model-meta">{accountProviderLabel(account.providerId, providers)}</span>
-              <span className="model-meta">{account.kind === "oauth" ? "OAuth" : "API Key"}</span>
-              <span className="model-meta">{account.activeInPi ? t("activeInPi") : t("saved")}</span>
-              <button
-                type="button"
-                onClick={(event) => {
-                  event.stopPropagation();
-                  onApply(account);
-                }}
-                disabled={busy}
+      {accounts.length === 0 ? (
+        <section className="accounts-empty-state">
+          <div className="grid max-w-[360px] gap-3">
+            <SectionTitle>{t("noAccounts")}</SectionTitle>
+            <p className="muted m-0">{t("noAccountsHelp")}</p>
+            <button type="button" className="primary flex w-fit items-center gap-2" onClick={() => addDialogRef.current?.showModal()} disabled={busy}>
+              <Plus size={15} /> {t("addAccount")}
+            </button>
+          </div>
+        </section>
+      ) : (
+        <section className="grid gap-3">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <SectionTitle>{t("savedAccounts")}</SectionTitle>
+            <label className="filter-control">
+              <span>{t("accountFilter")}</span>
+              <select value={providerFilter} onChange={(event) => onProviderFilter(event.target.value as AccountProviderFilter)}>
+                <option value="all">{t("allAccounts")}</option>
+                {providerFilterOptions.map((option) => (
+                  <option key={option.id} value={option.id}>
+                    {option.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+          </div>
+          {filteredAccounts.length === 0 ? <div className="empty-state">{t("noAccountsMatchFilter")}</div> : null}
+          <div className="model-list">
+            {filteredAccounts.map((account) => (
+              <div
+                key={account.id}
+                className={`account-row ${account.id === selectedAccount?.id ? "active" : ""}`}
+                onClick={() => onSelect(account.id)}
               >
-                {t("applyAccount")}
-              </button>
-            </div>
-          ))}
-        </div>
-      </section>
+                <strong>{account.label}</strong>
+                <span className="model-id">{accountIdentityText(account) || account.baseUrl || account.providerId}</span>
+                <span className="model-meta">{accountProviderLabel(account.providerId, providers)}</span>
+                <span className="model-meta">{account.kind === "oauth" ? "OAuth" : "API Key"}</span>
+                <span className="model-meta">{account.activeInPi ? t("activeInPi") : t("saved")}</span>
+                <button
+                  type="button"
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    onApply(account);
+                  }}
+                  disabled={busy}
+                >
+                  {t("applyAccount")}
+                </button>
+              </div>
+            ))}
+          </div>
+        </section>
+      )}
 
       {selectedAccount ? (
         <section className="grid gap-3 rounded-md border p-4" style={{ borderColor: "var(--border)", background: "var(--surface)" }}>
