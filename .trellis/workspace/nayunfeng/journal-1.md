@@ -447,3 +447,36 @@ No `.trellis/spec` update needed: this was a frontend-only interaction cleanup w
 ### Next Steps
 
 - None - task complete
+
+
+## Session 13: 修复账号页操作和账号默认项
+
+**Date**: 2026-06-08
+**Task**: 修复账号页操作和账号默认项
+**Branch**: `master`
+
+### Summary
+
+删除账号页筛选、刷新和测试入口及旧供应商应用/测试后端代码；为从已添加供应商创建的 API Key 账号保存 provider 默认项快照，并在应用账号时更新 Pi settings 默认 provider/model。验证 npm run build、npm run test:auth、cargo test、git diff --check 均通过。
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `e3af081` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
