@@ -8,7 +8,7 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 7
+- **Total Sessions**: 8
 - **Last Active**: 2026-06-07
 <!-- @@@/auto:current-status -->
 
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~238 | Active |
+| `journal-1.md` | ~271 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 8 | 2026-06-07 | Inline official draft provider fields | `dc88491` | `master` |
 | 7 | 2026-06-07 | Provider kind default and lock | `8808330` | `master` |
 | 6 | 2026-06-07 | Provider empty draft auth defaults | `7f3cf37` | `master` |
 | 5 | 2026-06-07 | Provider list drawer redesign | `26e7c62` | `master` |

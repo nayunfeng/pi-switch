@@ -236,3 +236,36 @@ Made new provider drafts default to official provider kind, allowed kind choice 
 ### Next Steps
 
 - None - task complete
+
+
+## Session 8: Inline official draft provider fields
+
+**Date**: 2026-06-07
+**Task**: Inline official draft provider fields
+**Branch**: `master`
+
+### Summary
+
+Moved official provider advanced baseUrl, api type, and provider API key override into the new official provider draft form while keeping persisted provider editing on the advanced dialog path.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `dc88491` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
