@@ -9,6 +9,7 @@ import {
   Download,
   Eye,
   EyeOff,
+  ExternalLink,
   Plus,
   RefreshCw,
   Save,
@@ -23,7 +24,6 @@ import {
   deleteAuthAccount,
   duplicateAuthAccount,
   fetchCustomProviderModels,
-  importPiAuthAccount,
   loginOfficialProviderOAuth,
   loadAuthAccounts,
   listPiModels,
@@ -31,6 +31,7 @@ import {
   renameAuthAccount,
   saveAppConfig,
   submitOAuthManualCode,
+  cancelOAuthLogin,
   testProvider as runTestProvider,
 } from "./commands";
 import {
@@ -126,7 +127,6 @@ function App() {
   const [newApiKeyOfficialProviderId, setNewApiKeyOfficialProviderId] = useState<OfficialProviderId>("openai-codex");
   const [newApiKeyCustomProviderId, setNewApiKeyCustomProviderId] = useState("");
   const [newAccountBaseUrl, setNewAccountBaseUrl] = useState(officialProviderBaseUrl("openai-codex"));
-  const [newAccountLabel, setNewAccountLabel] = useState("");
   const [newAccountApiKey, setNewAccountApiKey] = useState("");
   const [showAccountKey, setShowAccountKey] = useState(false);
   const [accountBusy, setAccountBusy] = useState(false);
@@ -159,6 +159,12 @@ function App() {
   const [oauthManualCodeInput, setOAuthManualCodeInput] = useState("");
   const [providerBusy, setProviderBusy] = useState(false);
   const openedOAuthUrlsRef = useRef<Set<string>>(new Set());
+  const oauthInlineActiveRef = useRef(false);
+  const oauthInlineLoginIdRef = useRef<string | undefined>(undefined);
+  const oauthRunningRef = useRef(false);
+  const oauthCallbackSubmittedRef = useRef(false);
+  const [oauthCallbackInput, setOAuthCallbackInput] = useState("");
+  const [oauthCallbackError, setOAuthCallbackError] = useState("");
   const openedEmptyAccountsRef = useRef(false);
   const language = config.language ?? systemLanguage();
   const t = useMemo(() => createTranslator(language), [language]);
@@ -203,15 +209,22 @@ function App() {
     let unlisten: (() => void) | undefined;
     listen<OAuthLoginEvent>("oauth-login-event", (event) => {
       if (!mounted) return;
-      const urlToOpen = event.payload.type === "auth" ? event.payload.url : event.payload.type === "deviceCode" ? event.payload.verificationUri : undefined;
-      if (urlToOpen && !openedOAuthUrlsRef.current.has(urlToOpen)) {
-        openedOAuthUrlsRef.current.add(urlToOpen);
-        openUrl(urlToOpen).catch((err) => showError(err));
-      }
-      if (event.payload.type === "manualCode") {
-        setOAuthManualCodeInput("");
-        setOAuthManualCodeState({ loginId: event.payload.loginId, message: event.payload.message ?? t("oauthManualCodePrompt") });
-        oauthManualCodeDialogRef.current?.showModal();
+      const inline = oauthInlineActiveRef.current;
+      if (inline) {
+        if (event.payload.loginId) {
+          oauthInlineLoginIdRef.current = event.payload.loginId;
+        }
+      } else {
+        const urlToOpen = event.payload.type === "auth" ? event.payload.url : event.payload.type === "deviceCode" ? event.payload.verificationUri : undefined;
+        if (urlToOpen && !openedOAuthUrlsRef.current.has(urlToOpen)) {
+          openedOAuthUrlsRef.current.add(urlToOpen);
+          openUrl(urlToOpen).catch((err) => showError(err));
+        }
+        if (event.payload.type === "manualCode") {
+          setOAuthManualCodeInput("");
+          setOAuthManualCodeState({ loginId: event.payload.loginId, message: event.payload.message ?? t("oauthManualCodePrompt") });
+          oauthManualCodeDialogRef.current?.showModal();
+        }
       }
       setOAuthState((state) => ({
         ...state,
@@ -464,7 +477,8 @@ function App() {
   }
 
   async function loginOAuthProvider(provider: Extract<Provider, { kind: "official" }>) {
-    if (oauthState.running) return;
+    if (oauthRunningRef.current) return;
+    oauthRunningRef.current = true;
     openedOAuthUrlsRef.current.clear();
     setOAuthState({ providerId: provider.providerId, running: true, events: [] });
     try {
@@ -483,31 +497,102 @@ function App() {
     } catch (err) {
       showError(err);
     } finally {
+      oauthRunningRef.current = false;
       setOAuthState((state) => ({ ...state, running: false }));
     }
   }
 
   async function addOAuthAccount(providerId = newOAuthProviderId) {
-    if (oauthState.running) return;
+    if (oauthRunningRef.current) return;
+    oauthRunningRef.current = true;
+    oauthCallbackSubmittedRef.current = false;
     openedOAuthUrlsRef.current.clear();
+    oauthInlineActiveRef.current = true;
+    oauthInlineLoginIdRef.current = undefined;
+    setOAuthCallbackInput("");
+    setOAuthCallbackError("");
     setNewOAuthProviderId(providerId);
     setOAuthState({ providerId, running: true, events: [] });
     setAccountBusy(true);
     try {
-      const result = await loginOfficialProviderOAuth(providerId, newAccountLabel);
+      const result = await loginOfficialProviderOAuth(providerId, "");
+      oauthInlineActiveRef.current = false;
+      oauthCallbackSubmittedRef.current = false;
       const applied = await applyAuthAccount(result.account.id);
       await refreshAccounts();
       focusAccount(applied);
       await bindActiveProviderToAccount(applied);
-      setNewAccountLabel("");
       addAccountDialogRef.current?.close();
       showToast("success", t("accountSavedAndApplied"));
     } catch (err) {
-      showError(err);
+      if (isOAuthCanceledError(err)) {
+        // canceled: stay silent
+      } else if (oauthCallbackSubmittedRef.current) {
+        // submitted callback rejected by server: session is dead, return to idle (no restart)
+        showToast("error", t("oauthCallbackInvalid"));
+      } else {
+        showError(err);
+      }
     } finally {
+      oauthInlineActiveRef.current = false;
+      oauthCallbackSubmittedRef.current = false;
+      oauthRunningRef.current = false;
       setOAuthState((state) => ({ ...state, running: false }));
       setAccountBusy(false);
     }
+  }
+
+  function isOAuthCanceledError(err: unknown) {
+    return typeof err === "object" && err !== null && (err as { code?: string }).code === "OAUTH_LOGIN_CANCELED";
+  }
+
+  function submitOAuthCallback() {
+    const value = oauthCallbackInput.trim();
+    const loginId = oauthInlineLoginIdRef.current;
+    if (!value || !loginId) return;
+    let parsed: URL;
+    try {
+      parsed = new URL(value);
+    } catch {
+      setOAuthCallbackError(t("oauthCallbackInvalidInput"));
+      return;
+    }
+    if (!parsed.searchParams.has("code") || !parsed.searchParams.has("state")) {
+      setOAuthCallbackError(t("oauthCallbackInvalidInput"));
+      return;
+    }
+    const authEvent = [...oauthState.events].reverse().find((event) => event.type === "auth");
+    const authUrl = authEvent && authEvent.type === "auth" ? authEvent.url : undefined;
+    if (authUrl) {
+      try {
+        const expectedState = new URL(authUrl).searchParams.get("state");
+        if (expectedState && parsed.searchParams.get("state") !== expectedState) {
+          setOAuthCallbackError(t("oauthCallbackInvalidInput"));
+          return;
+        }
+      } catch {
+        // auth URL unparseable: skip state cross-check, code+state presence already validated
+      }
+    }
+    setOAuthCallbackError("");
+    oauthCallbackSubmittedRef.current = true;
+    submitOAuthManualCode(loginId, value).catch((err) => showError(err));
+  }
+
+  function cancelOAuthInline() {
+    const loginId = oauthInlineLoginIdRef.current;
+    oauthInlineActiveRef.current = false;
+    oauthCallbackSubmittedRef.current = false;
+    if (loginId) cancelOAuthLogin(loginId).catch(() => {});
+  }
+
+  function changeAddMode(mode: AddAccountMode) {
+    if (mode !== "oauth" && oauthInlineActiveRef.current) cancelOAuthInline();
+    setNewAccountMode(mode);
+  }
+
+  function handleAddDialogClose() {
+    if (oauthInlineActiveRef.current) cancelOAuthInline();
   }
 
   async function addApiKeyAccount() {
@@ -525,11 +610,10 @@ function App() {
     }
     setAccountBusy(true);
     try {
-      const account = await createApiKeyAccount(newAccountProviderId, newAccountLabel, newAccountBaseUrl, newAccountApiKey);
+      const account = await createApiKeyAccount(newAccountProviderId, "", newAccountBaseUrl, newAccountApiKey);
       const applied = await applyAuthAccount(account.id);
       await refreshAccounts();
       focusAccount(applied);
-      setNewAccountLabel("");
       setNewAccountApiKey("");
       addAccountDialogRef.current?.close();
       showToast("success", t("accountSavedAndApplied"));
@@ -560,21 +644,6 @@ function App() {
       await applyAuthAccount(account.id);
       await refreshAccounts();
       showToast("success", t("providerApiKeySavedAsAccount"));
-    } catch (err) {
-      showError(err);
-    } finally {
-      setAccountBusy(false);
-    }
-  }
-
-  async function importCurrentPiAuth() {
-    setAccountBusy(true);
-    try {
-      const account = await importPiAuthAccount(newOAuthProviderId, newAccountLabel);
-      await refreshAccounts();
-      focusAccount(account);
-      setNewAccountLabel("");
-      showToast("success", t("accountSaved"));
     } catch (err) {
       showError(err);
     } finally {
@@ -858,7 +927,6 @@ function App() {
               apiKeyCustomProviderId={newApiKeyCustomProviderId}
               apiKeyProviderId={newAccountProviderId}
               baseUrl={newAccountBaseUrl}
-              label={newAccountLabel}
               apiKey={newAccountApiKey}
               showApiKey={showAccountKey}
               busy={accountBusy}
@@ -871,13 +939,17 @@ function App() {
               onApiKeyOfficialProviderId={setNewApiKeyOfficialProviderId}
               onApiKeyCustomProviderId={setNewApiKeyCustomProviderId}
               onBaseUrl={setNewAccountBaseUrl}
-              onLabel={setNewAccountLabel}
               onApiKey={setNewAccountApiKey}
               onShowApiKey={setShowAccountKey}
-              onAddMode={setNewAccountMode}
+              onAddMode={changeAddMode}
               onAddOAuth={addOAuthAccount}
+              onSubmitCallback={submitOAuthCallback}
+              onCancelOAuth={cancelOAuthInline}
+              callback={oauthCallbackInput}
+              callbackError={oauthCallbackError}
+              onCallback={(value) => { setOAuthCallbackInput(value); setOAuthCallbackError(""); }}
+              onDialogClose={handleAddDialogClose}
               onAddApiKey={addApiKeyAccount}
-              onImport={importCurrentPiAuth}
               onRefresh={refreshAccountState}
               onApply={applySelectedAccount}
               onRename={renameSelectedAccount}
@@ -1253,7 +1325,6 @@ function AccountsPanel({
   apiKeyCustomProviderId,
   apiKeyProviderId,
   baseUrl,
-  label,
   apiKey,
   showApiKey,
   busy,
@@ -1266,13 +1337,17 @@ function AccountsPanel({
   onApiKeyOfficialProviderId,
   onApiKeyCustomProviderId,
   onBaseUrl,
-  onLabel,
   onApiKey,
   onShowApiKey,
   onAddMode,
   onAddOAuth,
+  onSubmitCallback,
+  onCancelOAuth,
+  callback,
+  callbackError,
+  onCallback,
+  onDialogClose,
   onAddApiKey,
-  onImport,
   onRefresh,
   onApply,
   onRename,
@@ -1293,7 +1368,6 @@ function AccountsPanel({
   apiKeyCustomProviderId: string;
   apiKeyProviderId: string;
   baseUrl: string;
-  label: string;
   apiKey: string;
   showApiKey: boolean;
   busy: boolean;
@@ -1305,13 +1379,17 @@ function AccountsPanel({
   onApiKeyOfficialProviderId: (value: OfficialProviderId) => void;
   onApiKeyCustomProviderId: (value: string) => void;
   onBaseUrl: (value: string) => void;
-  onLabel: (value: string) => void;
   onApiKey: (value: string) => void;
   onShowApiKey: (value: boolean) => void;
   onAddMode: (value: AddAccountMode) => void;
   onAddOAuth: (providerId?: OfficialProviderId) => void;
+  onSubmitCallback: () => void;
+  onCancelOAuth: () => void;
+  callback: string;
+  callbackError: string;
+  onCallback: (value: string) => void;
+  onDialogClose: () => void;
   onAddApiKey: () => void;
-  onImport: () => void;
   onRefresh: () => void;
   onApply: (account: AuthAccount) => void;
   onRename: (account: AuthAccount) => void;
@@ -1322,15 +1400,13 @@ function AccountsPanel({
   t: ReturnType<typeof createTranslator>;
 }) {
   const oauthSupported = supportsOAuthLogin(oauthProviderId);
+  const oauthRunning = oauthState.running && oauthState.providerId === oauthProviderId;
+  const oauthAuthEvent = oauthRunning ? [...oauthState.events].reverse().find((event) => event.type === "auth") : undefined;
+  const oauthAuthUrl = oauthAuthEvent && oauthAuthEvent.type === "auth" ? oauthAuthEvent.url : undefined;
+  const oauthDeviceEvent = oauthRunning ? [...oauthState.events].reverse().find((event) => event.type === "deviceCode") : undefined;
+  const oauthDeviceCode = oauthDeviceEvent && oauthDeviceEvent.type === "deviceCode" ? oauthDeviceEvent : undefined;
   const codexSummary = codexAccountSummary(accounts);
   const providerFilterOptions = accountProviderFilterOptions(accounts, providers);
-  const selectedCustomProvider = customProviders.find((provider) => provider.id === apiKeyCustomProviderId);
-  const apiKeyProviderLabel =
-    apiKeyProviderSource === "official"
-      ? OFFICIAL_PROVIDER_LABELS[apiKeyOfficialProviderId]
-      : selectedCustomProvider
-        ? providerLabel(selectedCustomProvider)
-        : t("custom");
   return (
     <div className="grid max-w-[1040px] gap-4">
       <div className="flex items-center justify-between gap-3">
@@ -1348,7 +1424,7 @@ function AccountsPanel({
         </div>
       </div>
 
-      <dialog ref={addDialogRef} className="dialog model-dialog p-4" aria-labelledby="add-account-dialog-title">
+      <dialog ref={addDialogRef} className="dialog model-dialog p-4" aria-labelledby="add-account-dialog-title" onClose={onDialogClose}>
         <button type="button" className="dialog-close icon-button" aria-label={t("close")} onClick={() => addDialogRef.current?.close()}>
           <X size={16} />
         </button>
@@ -1363,31 +1439,86 @@ function AccountsPanel({
         </div>
         {addMode === "oauth" ? (
           <div className="grid gap-4">
-            <div className="editor-grid grid grid-cols-2 gap-4">
-              <Field label={t("provider")}>
-                <select value={oauthProviderId} onChange={(event) => onOAuthProviderId(event.target.value as OfficialProviderId)}>
-                  {OFFICIAL_PROVIDER_IDS.filter(supportsOAuthLogin).map((id) => (
-                    <option key={id} value={id}>
-                      {OFFICIAL_PROVIDER_LABELS[id]}
-                    </option>
-                  ))}
-                </select>
-              </Field>
-              <Field label={t("accountNameOptional")}>
-                <input value={label} onChange={(event) => onLabel(event.target.value)} placeholder={OFFICIAL_PROVIDER_LABELS[oauthProviderId]} />
-              </Field>
-            </div>
+            <Field label={t("provider")}>
+              <select value={oauthProviderId} disabled={oauthRunning} onChange={(event) => onOAuthProviderId(event.target.value as OfficialProviderId)}>
+                {OFFICIAL_PROVIDER_IDS.filter(supportsOAuthLogin).map((id) => (
+                  <option key={id} value={id}>
+                    {OFFICIAL_PROVIDER_LABELS[id]}
+                  </option>
+                ))}
+              </select>
+            </Field>
             <div className="muted">{t("oauthAccountHelp")}</div>
             <div className="muted">{t("oauthMultiAccountHelp")}</div>
-            {oauthState.providerId === oauthProviderId && oauthState.events.length > 0 ? <OAuthEventList events={oauthState.events} t={t} /> : null}
-            <div className="flex flex-wrap justify-between gap-2">
-              <button type="button" className="flex items-center gap-2" onClick={onImport} disabled={busy}>
-                <Download size={15} /> {t("importPiAuth")}
-              </button>
-              <button type="button" className="primary flex items-center gap-2" onClick={() => onAddOAuth()} disabled={busy || oauthState.running || !oauthSupported}>
-                <Plus size={15} /> {oauthState.running && oauthState.providerId === oauthProviderId ? t("running") : t("addOAuthAccount")}
-              </button>
-            </div>
+            {!oauthRunning ? (
+              <div className="flex flex-wrap justify-end gap-2">
+                <button type="button" onClick={() => addDialogRef.current?.close()}>{t("cancel")}</button>
+                <button type="button" className="primary flex items-center gap-2" onClick={() => onAddOAuth()} disabled={busy || !oauthSupported}>
+                  <Plus size={15} /> {t("startOAuth")}
+                </button>
+              </div>
+            ) : (
+              <div className="grid gap-3">
+                {oauthAuthUrl ? (
+                  <>
+                    <Field label={t("oauthAuthLink")}>
+                      <div className="flex items-start gap-2">
+                        <textarea
+                          readOnly
+                          value={oauthAuthUrl}
+                          rows={3}
+                          onFocus={(event) => event.currentTarget.select()}
+                          className="w-full resize-y rounded-md border px-2 py-1.5 font-mono text-xs leading-relaxed"
+                          style={{ borderColor: "var(--border)", wordBreak: "break-all", whiteSpace: "pre-wrap" }}
+                        />
+                        <button type="button" className="icon-button" title={t("copy")} onClick={() => { void navigator.clipboard?.writeText(oauthAuthUrl); }}>
+                          <Copy size={15} />
+                        </button>
+                      </div>
+                    </Field>
+                    <button type="button" className="primary flex items-center justify-center gap-2" onClick={() => { void openUrl(oauthAuthUrl); }}>
+                      <ExternalLink size={15} /> {t("openInBrowser")}
+                    </button>
+                    <Field label={t("oauthCallbackLabel")}>
+                      <div className="flex gap-2">
+                        <input value={callback} placeholder={t("oauthCallbackPlaceholder")} onChange={(event) => onCallback(event.target.value)} />
+                        <button type="button" className="flex items-center gap-2 whitespace-nowrap" onClick={onSubmitCallback} disabled={!callback.trim()}>
+                          <Check size={15} /> {t("oauthCallbackContinue")}
+                        </button>
+                      </div>
+                      {callbackError ? <div className="mt-1 text-xs" style={{ color: "var(--danger)" }}>{callbackError}</div> : null}
+                    </Field>
+                    <div className="muted">{t("oauthAutoUpdateHint")}</div>
+                  </>
+                ) : oauthDeviceCode ? (
+                  <>
+                    <Field label={t("oauthDeviceCodeLabel")}>
+                      <div className="flex items-center gap-2">
+                        <span className="text-lg font-mono tracking-widest">{oauthDeviceCode.userCode}</span>
+                        <button type="button" className="icon-button" title={t("copy")} onClick={() => { void navigator.clipboard?.writeText(oauthDeviceCode.userCode); }}>
+                          <Copy size={15} />
+                        </button>
+                      </div>
+                    </Field>
+                    <Field label={t("oauthVerificationPage")}>
+                      <div className="flex items-center gap-2">
+                        <span className="font-mono text-xs break-all" style={{ color: "var(--muted)" }}>{oauthDeviceCode.verificationUri}</span>
+                        <button type="button" className="primary flex items-center gap-2 whitespace-nowrap" onClick={() => { void openUrl(oauthDeviceCode.verificationUri); }}>
+                          <ExternalLink size={15} /> {t("openInBrowser")}
+                        </button>
+                      </div>
+                    </Field>
+                    <div className="muted">{t("oauthDeviceCodeHint")}</div>
+                  </>
+                ) : (
+                  <div className="muted">{t("oauthGeneratingLink")}</div>
+                )}
+                {oauthState.events.length > 0 ? <OAuthEventList events={oauthState.events} t={t} /> : null}
+                <div className="flex flex-wrap justify-end gap-2">
+                  <button type="button" onClick={onCancelOAuth}>{t("cancel")}</button>
+                </div>
+              </div>
+            )}
           </div>
         ) : (
           <div className="grid gap-4">
@@ -1399,32 +1530,27 @@ function AccountsPanel({
                 {t("custom")}
               </button>
             </div>
-            <div className="editor-grid grid grid-cols-2 gap-4">
-              {apiKeyProviderSource === "official" ? (
-                <Field label={t("provider")}>
-                  <select value={apiKeyOfficialProviderId} onChange={(event) => onApiKeyOfficialProviderId(event.target.value as OfficialProviderId)}>
-                    {OFFICIAL_PROVIDER_IDS.map((id) => (
-                      <option key={id} value={id}>
-                        {OFFICIAL_PROVIDER_LABELS[id]}
-                      </option>
-                    ))}
-                  </select>
-                </Field>
-              ) : (
-                <Field label={t("provider")}>
-                  <select value={apiKeyCustomProviderId} onChange={(event) => onApiKeyCustomProviderId(event.target.value)} disabled={customProviders.length === 0}>
-                    {customProviders.map((provider) => (
-                      <option key={provider.id} value={provider.id}>
-                        {provider.name}
-                      </option>
-                    ))}
-                  </select>
-                </Field>
-              )}
-              <Field label={t("accountNameOptional")}>
-                <input value={label} onChange={(event) => onLabel(event.target.value)} placeholder={apiKeyProviderLabel} />
+            {apiKeyProviderSource === "official" ? (
+              <Field label={t("provider")}>
+                <select value={apiKeyOfficialProviderId} onChange={(event) => onApiKeyOfficialProviderId(event.target.value as OfficialProviderId)}>
+                  {OFFICIAL_PROVIDER_IDS.map((id) => (
+                    <option key={id} value={id}>
+                      {OFFICIAL_PROVIDER_LABELS[id]}
+                    </option>
+                  ))}
+                </select>
               </Field>
-            </div>
+            ) : (
+              <Field label={t("provider")}>
+                <select value={apiKeyCustomProviderId} onChange={(event) => onApiKeyCustomProviderId(event.target.value)} disabled={customProviders.length === 0}>
+                  {customProviders.map((provider) => (
+                    <option key={provider.id} value={provider.id}>
+                      {provider.name}
+                    </option>
+                  ))}
+                </select>
+              </Field>
+            )}
             <Field label={t("baseUrl")} required>
               <input value={baseUrl} onChange={(event) => onBaseUrl(event.target.value)} />
             </Field>

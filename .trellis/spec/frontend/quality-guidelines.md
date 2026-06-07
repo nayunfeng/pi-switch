@@ -89,6 +89,67 @@ if is_wsl_environment() {
 
 ---
 
+### Scenario: Windows Pi Command/Package Discovery
+
+#### 1. Scope / Trigger
+
+- Trigger: backend code in `src-tauri/src/lib.rs` that locates the `pi` CLI, spawns it, or loads the Pi node package (`dist/index.js`). Used by `list_pi_models_*` and `login_official_provider_oauth`.
+- Cross-platform infra contract: Unix and Windows resolve/launch `pi` and the package path differently. Symptom on Windows when violated: "无法读取 Pi 模型" and OAuth never starts (`which`/`pi.cmd`/`\\?\`/`file://` failures), or node `ERR_INVALID_FILE_URL_PATH`.
+
+#### 2. Signatures
+
+- `find_pi_command_path() -> AppResult<PathBuf>` — locate the `pi` launcher.
+- `select_pi_command_path(locator_stdout: &str) -> Option<String>` — pure: pick a spawnable launcher from multi-line locator output.
+- `resolve_pi_package_index(pi_path: &Path) -> AppResult<PathBuf>` — shared helper returning `<pkg>/dist/index.js` (used by registry + OAuth).
+- `strip_extended_length_prefix(path: &Path) -> PathBuf` — pure: drop Windows `\\?\` / `\\?\UNC\`.
+
+#### 3. Contracts
+
+- Locator: `#[cfg(windows)]` uses `where`; `#[cfg(not(windows))]` uses `which`. `where` may return multiple lines (`pi`, `pi.cmd`, `pi.ps1`) → `select_pi_command_path` prefers a Rust-`Command`-spawnable launcher (`.cmd`/`.bat`/`.exe`) over the extension-less bash shim.
+- CLI spawn: Windows must invoke the shim via `cmd /C <pi.cmd> --list-models <provider> --offline` (Rust `Command::new("pi")` cannot start a `.cmd`/`.ps1`; there is no `pi.exe`). Unix spawns `pi` directly.
+- Canonicalization: `fs::canonicalize` on Windows yields a `\\?\`-prefixed path → MUST pass through `strip_extended_length_prefix` before deriving paths or building URLs.
+- Package path: Unix derives `pi_path.parent().parent()/dist/index.js` (npm symlink layout); Windows parses the `pi.cmd`/`pi` shim's embedded `node_modules/.../dist/cli.js`, swaps `cli.js`→`index.js`, with an npm-global-prefix fallback.
+- Node dynamic import URL: NEVER `format!("file://{}", path.display())`. Pass the raw OS path (JSON-serialized) into the node script and use `pathToFileURL(path).href`.
+
+#### 4. Validation & Error Matrix
+
+- `where`/`which` not found or empty stdout → `PI_COMMAND_NOT_FOUND`.
+- shim parse fails AND npm-prefix fallback has no `dist/index.js` → `PI_PACKAGE_NOT_FOUND`.
+- `pi --list-models` non-zero exit → `PI_MODEL_LIST_FAILED`; CLI failure falls back to the registry (node) path; both failing → `PI_MODEL_REGISTRY_FAILED`.
+
+#### 5. Good/Base/Bad Cases
+
+- Good (Windows): `where pi` → picks `...\npm\pi.cmd`; package resolves to `...\node_modules\@earendil-works\pi-coding-agent\dist\index.js`; node imports via `pathToFileURL`.
+- Base (Unix/macOS): `which pi` → symlink canonicalizes into the package; `parent().parent()/dist/index.js`.
+- Bad: `Command::new("pi")` on Windows; `which` on Windows (absent); `file://` + `\\?\C:\...` → `ERR_INVALID_FILE_URL_PATH`.
+
+#### 6. Tests Required
+
+- `select_pi_command_*`: prefers `.cmd` over extension-less shim; falls back to first candidate (Unix single line) / empty input → None.
+- `pi_dist_index_from_*`: extracts `dist/cli.js` from cmd & bash shims (both slash styles, strips `%dp0%`/`$basedir`), swaps to `index.js`; returns None without a cli token.
+- `strip_extended_length_prefix_*`: `\\?\C:\...`→`C:\...`, `\\?\UNC\server\share`→`\\server\share`, Unix/plain → no-op.
+- Run `cargo test --manifest-path src-tauri/Cargo.toml --lib` + `cargo build`.
+
+#### 7. Wrong vs Correct
+
+##### Wrong
+
+```rust
+let out = Command::new("pi").arg("--list-models").output().await?;                 // Windows: can't start pi.cmd
+let pkg = canonicalized_pi.parent().unwrap().parent().unwrap().join("dist/index.js"); // Windows: wrong layout + \\?\
+let url = format!("file://{}", pkg.display());                                     // Windows: invalid file URL
+```
+
+##### Correct
+
+```rust
+let pi = find_pi_command_path().await?;     // where on Windows / which on Unix, picks a spawnable launcher
+let index = resolve_pi_package_index(&pi)?; // strips \\?\, parses shim on Windows / symlink layout on Unix
+// node script: import { pathToFileURL } from "node:url"; await import(pathToFileURL(<index>).href)
+```
+
+---
+
 ## Testing Requirements
 
 <!-- What level of testing is expected -->

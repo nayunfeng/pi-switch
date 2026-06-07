@@ -7,8 +7,8 @@ use std::{
     io::Write,
     path::{Path, PathBuf},
     sync::{
-        atomic::{AtomicU64, Ordering},
-        Mutex,
+        atomic::{AtomicBool, AtomicU64, Ordering},
+        Arc, Mutex,
     },
     time::{SystemTime, UNIX_EPOCH},
 };
@@ -475,6 +475,12 @@ pub struct SubmitOAuthManualCodeInput {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct CancelOAuthLoginInput {
+    pub login_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct CreateApiKeyAccountInput {
     pub provider_id: String,
     pub label: String,
@@ -670,8 +676,26 @@ fn default_accounts_store() -> AccountsStore {
 }
 
 #[derive(Default)]
+struct OAuthCancelToken {
+    cancelled: AtomicBool,
+    notify: tokio::sync::Notify,
+}
+
+impl OAuthCancelToken {
+    fn cancel(&self) {
+        self.cancelled.store(true, Ordering::SeqCst);
+        self.notify.notify_one();
+    }
+
+    fn is_cancelled(&self) -> bool {
+        self.cancelled.load(Ordering::SeqCst)
+    }
+}
+
+#[derive(Default)]
 struct OAuthLoginSessions {
     manual_code_files: Mutex<HashMap<String, PathBuf>>,
+    cancels: Mutex<HashMap<String, Arc<OAuthCancelToken>>>,
 }
 
 fn create_oauth_login_id() -> String {
@@ -683,18 +707,27 @@ fn register_oauth_login_session(
     sessions: &OAuthLoginSessions,
     login_id: &str,
     manual_code_file: &Path,
-) -> AppResult<()> {
+) -> AppResult<Arc<OAuthCancelToken>> {
     let mut files = sessions
         .manual_code_files
         .lock()
         .map_err(|_| AppError::new("OAUTH_LOGIN_FAILED", "OAuth 登录会话状态不可用"))?;
     files.insert(login_id.to_string(), manual_code_file.to_path_buf());
-    Ok(())
+    let token = Arc::new(OAuthCancelToken::default());
+    let mut cancels = sessions
+        .cancels
+        .lock()
+        .map_err(|_| AppError::new("OAUTH_LOGIN_FAILED", "OAuth 登录会话状态不可用"))?;
+    cancels.insert(login_id.to_string(), token.clone());
+    Ok(token)
 }
 
 fn unregister_oauth_login_session(sessions: &OAuthLoginSessions, login_id: &str) {
     if let Ok(mut files) = sessions.manual_code_files.lock() {
         files.remove(login_id);
+    }
+    if let Ok(mut cancels) = sessions.cancels.lock() {
+        cancels.remove(login_id);
     }
 }
 
@@ -702,6 +735,7 @@ struct OAuthLoginSessionGuard<'a> {
     sessions: &'a OAuthLoginSessions,
     login_id: String,
     manual_code_file: PathBuf,
+    cancel: Arc<OAuthCancelToken>,
 }
 
 impl<'a> OAuthLoginSessionGuard<'a> {
@@ -710,11 +744,12 @@ impl<'a> OAuthLoginSessionGuard<'a> {
         login_id: String,
         manual_code_file: PathBuf,
     ) -> AppResult<Self> {
-        register_oauth_login_session(sessions, &login_id, &manual_code_file)?;
+        let cancel = register_oauth_login_session(sessions, &login_id, &manual_code_file)?;
         Ok(Self {
             sessions,
             login_id,
             manual_code_file,
+            cancel,
         })
     }
 
@@ -751,6 +786,17 @@ fn submit_oauth_manual_code_to_session(
     fs::write(&path, code).map_err(|err| {
         AppError::new("OAUTH_LOGIN_FAILED", "写入 OAuth 登录码失败").with_details(err.to_string())
     })
+}
+
+fn cancel_oauth_login_in_session(sessions: &OAuthLoginSessions, login_id: &str) {
+    let token = sessions
+        .cancels
+        .lock()
+        .ok()
+        .and_then(|cancels| cancels.get(login_id).cloned());
+    if let Some(token) = token {
+        token.cancel();
+    }
 }
 
 fn identity_field_is_safe(key: &str) -> bool {
@@ -1703,6 +1749,15 @@ fn submit_oauth_manual_code(
 }
 
 #[tauri::command]
+fn cancel_oauth_login(
+    sessions: tauri::State<OAuthLoginSessions>,
+    input: CancelOAuthLoginInput,
+) -> AppResult<()> {
+    cancel_oauth_login_in_session(&sessions, &input.login_id);
+    Ok(())
+}
+
+#[tauri::command]
 fn create_api_key_account(input: CreateApiKeyAccountInput) -> AppResult<AuthAccountView> {
     let provider_id = input.provider_id.trim();
     validate_account_provider_id(provider_id, &AuthAccountKind::ApiKey)?;
@@ -2009,16 +2064,11 @@ async fn list_pi_models(input: ListPiModelsInput) -> AppResult<ListPiModelsResul
 }
 
 async fn list_pi_models_via_cli(provider_id: &str) -> AppResult<Vec<PiModelInfo>> {
-    let output = Command::new("pi")
-        .arg("--list-models")
-        .arg(provider_id)
-        .arg("--offline")
-        .output()
-        .await
-        .map_err(|err| {
-            AppError::new("PI_COMMAND_NOT_FOUND", "无法启动 pi 读取模型列表")
-                .with_details(err.to_string())
-        })?;
+    let mut command = pi_cli_command(provider_id).await?;
+    let output = command.output().await.map_err(|err| {
+        AppError::new("PI_COMMAND_NOT_FOUND", "无法启动 pi 读取模型列表")
+            .with_details(err.to_string())
+    })?;
     if !output.status.success() {
         return Err(
             AppError::new("PI_MODEL_LIST_FAILED", "pi --list-models 执行失败")
@@ -2028,20 +2078,42 @@ async fn list_pi_models_via_cli(provider_id: &str) -> AppResult<Vec<PiModelInfo>
     parse_pi_models_table(&String::from_utf8_lossy(&output.stdout), provider_id)
 }
 
+/// Build the `pi --list-models <provider> --offline` invocation.
+///
+/// Rust's `Command` only resolves real executables (`pi`/`pi.exe`), but on
+/// Windows `pi` is an npm launcher shim (`pi.cmd`/`pi.ps1`) with no `pi.exe`, so
+/// `CreateProcess` cannot start it directly. We resolve the real `.cmd` shim and
+/// run it through `cmd /C`. Unix/macOS keep invoking `pi` from PATH unchanged.
+#[cfg(windows)]
+async fn pi_cli_command(provider_id: &str) -> AppResult<Command> {
+    let pi_path = find_pi_command_path().await?;
+    let mut command = Command::new("cmd");
+    command
+        .arg("/C")
+        .arg(&pi_path)
+        .arg("--list-models")
+        .arg(provider_id)
+        .arg("--offline");
+    Ok(command)
+}
+
+#[cfg(not(windows))]
+async fn pi_cli_command(provider_id: &str) -> AppResult<Command> {
+    let mut command = Command::new("pi");
+    command
+        .arg("--list-models")
+        .arg(provider_id)
+        .arg("--offline");
+    Ok(command)
+}
+
 async fn list_pi_models_via_registry(input: ListPiModelsInput) -> AppResult<ListPiModelsResult> {
     let pi_path = find_pi_command_path().await?;
-    let package_index = pi_path
-        .parent()
-        .and_then(Path::parent)
-        .map(|package_dir| package_dir.join("dist").join("index.js"))
-        .filter(|path| path.exists())
-        .ok_or_else(|| {
-            AppError::new("PI_PACKAGE_NOT_FOUND", "无法定位 Pi 模型注册表")
-                .with_details(pi_path.display().to_string())
-        })?;
+    let package_index = resolve_pi_package_index(&pi_path).await?;
     let script = format!(
         r#"
-const mod = await import({package_index});
+import {{ pathToFileURL }} from "node:url";
+const mod = await import(pathToFileURL({package_index}).href);
 const {{ ModelRegistry, AuthStorage }} = mod;
 const providerId = {provider_id};
 const apiKey = {api_key};
@@ -2060,7 +2132,7 @@ const models = registry.getAvailable()
   }}));
 console.log(JSON.stringify(models));
 "#,
-        package_index = serde_json::to_string(&format!("file://{}", package_index.display()))
+        package_index = serde_json::to_string(&package_index.display().to_string())
             .unwrap_or_default(),
         provider_id = serde_json::to_string(&input.provider_id).unwrap_or_default(),
         api_key = serde_json::to_string(&input.api_key.filter(|key| !key.trim().is_empty()))
@@ -2100,15 +2172,7 @@ async fn login_official_provider_oauth(
     }
 
     let pi_path = find_pi_command_path().await?;
-    let package_index = pi_path
-        .parent()
-        .and_then(Path::parent)
-        .map(|package_dir| package_dir.join("dist").join("index.js"))
-        .filter(|path| path.exists())
-        .ok_or_else(|| {
-            AppError::new("PI_PACKAGE_NOT_FOUND", "无法定位 Pi OAuth 模块")
-                .with_details(pi_path.display().to_string())
-        })?;
+    let package_index = resolve_pi_package_index(&pi_path).await?;
 
     let temp_dir = tempfile::tempdir().map_err(|err| {
         AppError::new("OAUTH_LOGIN_FAILED", "创建临时 OAuth 目录失败").with_details(err.to_string())
@@ -2156,33 +2220,48 @@ async fn login_official_provider_oauth(
     let mut reader = tokio::io::BufReader::new(stdout);
     let mut line = String::new();
     let mut provider_name = input.provider_id.clone();
+    let cancel = session_guard.cancel.clone();
+    let mut canceled = false;
     loop {
-        line.clear();
-        let read = reader.read_line(&mut line).await.map_err(|err| {
-            AppError::new("OAUTH_LOGIN_FAILED", "读取 OAuth 登录输出失败")
-                .with_details(err.to_string())
-        })?;
-        if read == 0 {
+        if cancel.is_cancelled() {
+            canceled = true;
+            let _ = child.start_kill();
             break;
         }
-        let trimmed = line.trim();
-        if trimmed.is_empty() {
-            continue;
+        line.clear();
+        tokio::select! {
+            read = reader.read_line(&mut line) => {
+                let read = read.map_err(|err| {
+                    AppError::new("OAUTH_LOGIN_FAILED", "读取 OAuth 登录输出失败")
+                        .with_details(err.to_string())
+                })?;
+                if read == 0 {
+                    break;
+                }
+                let trimmed = line.trim();
+                if trimmed.is_empty() {
+                    continue;
+                }
+                let event: OAuthEvent = serde_json::from_str(trimmed).map_err(|err| {
+                    AppError::new("OAUTH_LOGIN_FAILED", "OAuth 登录输出无法解析")
+                        .with_details(format!("{trimmed}: {err}"))
+                })?;
+                if let Some(name) = &event.provider_name {
+                    provider_name = name.clone();
+                }
+                let _ = window.emit("oauth-login-event", event);
+            }
+            _ = cancel.notify.notified() => {}
         }
-        let event: OAuthEvent = serde_json::from_str(trimmed).map_err(|err| {
-            AppError::new("OAUTH_LOGIN_FAILED", "OAuth 登录输出无法解析")
-                .with_details(format!("{trimmed}: {err}"))
-        })?;
-        if let Some(name) = &event.provider_name {
-            provider_name = name.clone();
-        }
-        let _ = window.emit("oauth-login-event", event);
     }
 
     let status = child.wait().await.map_err(|err| {
         AppError::new("OAUTH_LOGIN_FAILED", "等待 OAuth 登录进程失败").with_details(err.to_string())
     })?;
     session_guard.cleanup();
+    if canceled {
+        return Err(AppError::new("OAUTH_LOGIN_CANCELED", "OAuth 登录已取消"));
+    }
     let stderr_text = match timeout(Duration::from_secs(2), &mut stderr_task).await {
         Ok(Ok(text)) => text,
         _ => String::new(),
@@ -2230,7 +2309,8 @@ fn oauth_login_script(
     format!(
         r#"
 import fs from "node:fs/promises";
-const mod = await import({package_index});
+import {{ pathToFileURL }} from "node:url";
+const mod = await import(pathToFileURL({package_index}).href);
 const providerId = {provider_id};
 const loginId = {login_id};
 const manualCodePath = {manual_code_path};
@@ -2281,7 +2361,7 @@ await auth.login(providerId, {{
 }});
 emit({{ type: "success", message: `Logged in to ${{provider.name}}` }});
 "#,
-        package_index = serde_json::to_string(&format!("file://{}", package_index.display()))
+        package_index = serde_json::to_string(&package_index.display().to_string())
             .unwrap_or_default(),
         provider_id = serde_json::to_string(provider_id).unwrap_or_default(),
         auth_path = serde_json::to_string(&auth_path.display().to_string()).unwrap_or_default(),
@@ -3377,7 +3457,14 @@ where
 }
 
 async fn find_pi_command_path() -> AppResult<PathBuf> {
-    let output = Command::new("which")
+    // Windows has no `which`; `where`/`where.exe` lists every match (`pi`, `pi.cmd`,
+    // `pi.ps1`, ...). Unix/macOS keep using `which`.
+    #[cfg(windows)]
+    let locator = "where";
+    #[cfg(not(windows))]
+    let locator = "which";
+
+    let output = Command::new(locator)
         .arg("pi")
         .output()
         .await
@@ -3390,17 +3477,180 @@ async fn find_pi_command_path() -> AppResult<PathBuf> {
                 .with_details(String::from_utf8_lossy(&output.stderr).to_string()),
         );
     }
-    let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    if path.is_empty() {
-        return Err(AppError::new(
-            "PI_COMMAND_NOT_FOUND",
-            "当前 GUI 环境无法找到 pi 命令",
-        ));
-    }
-    fs::canonicalize(&path).map_err(|err| {
+    let path = select_pi_command_path(&String::from_utf8_lossy(&output.stdout)).ok_or_else(|| {
+        AppError::new("PI_COMMAND_NOT_FOUND", "当前 GUI 环境无法找到 pi 命令")
+    })?;
+    let canonical = fs::canonicalize(&path).map_err(|err| {
         AppError::new("PI_COMMAND_NOT_FOUND", "无法解析 pi 命令路径")
             .with_details(format!("{path}: {err}"))
-    })
+    })?;
+    // Windows `fs::canonicalize` returns an extended-length `\\?\` path; strip it
+    // so downstream consumers (node `pathToFileURL`, package layout derivation)
+    // see a plain `C:\...` path. No-op on Unix.
+    Ok(strip_extended_length_prefix(&canonical))
+}
+
+/// Remove the Windows extended-length path prefix (`\\?\` / `\\?\UNC\`) that
+/// `fs::canonicalize` adds, returning a plain path. On paths without the prefix
+/// (always true on Unix) this is a no-op clone.
+fn strip_extended_length_prefix(path: &Path) -> PathBuf {
+    let raw = path.to_string_lossy();
+    if let Some(unc) = raw.strip_prefix(r"\\?\UNC\") {
+        // `\\?\UNC\server\share` -> `\\server\share`
+        return PathBuf::from(format!(r"\\{unc}"));
+    }
+    if let Some(rest) = raw.strip_prefix(r"\\?\") {
+        return PathBuf::from(rest);
+    }
+    path.to_path_buf()
+}
+
+/// Pick a usable `pi` executable from the locator (`where`/`which`) output.
+///
+/// `where` on Windows can list multiple candidates (`pi`, `pi.cmd`, `pi.ps1`); we
+/// prefer a Rust-`Command`-spawnable launcher (`.cmd`/`.bat`/`.exe`) over the
+/// extension-less bash shim that `CreateProcess` cannot run. `which` on Unix
+/// usually returns a single line and any of them works.
+fn select_pi_command_path(locator_output: &str) -> Option<String> {
+    let candidates: Vec<&str> = locator_output
+        .lines()
+        .map(|line| line.trim())
+        .filter(|line| !line.is_empty())
+        .collect();
+    if candidates.is_empty() {
+        return None;
+    }
+    let preferred_ext = |path: &str| {
+        let lower = path.to_ascii_lowercase();
+        lower.ends_with(".cmd") || lower.ends_with(".bat") || lower.ends_with(".exe")
+    };
+    candidates
+        .iter()
+        .find(|path| preferred_ext(path))
+        .or_else(|| candidates.first())
+        .map(|path| path.to_string())
+}
+
+/// Resolve the Pi package `dist/index.js` from the located `pi` command path.
+///
+/// Shared by `list_pi_models_via_registry` and `login_official_provider_oauth`
+/// so the layout assumption lives in one place (see code-reuse guide).
+///
+/// - Unix/macOS: npm installs `pi` as a symlink at `<pkg>/bin/pi`, so
+///   `parent().parent()/dist/index.js` lands on the package root.
+/// - Windows: `pi.cmd`/`pi` are launcher shims that sit directly in the npm
+///   prefix (`...\npm\pi.cmd`), so `parent().parent()` points at `...\Roaming`
+///   and the Unix derivation is wrong. We instead read the shim, extract the
+///   embedded `node_modules\...\dist\cli.js` path, and swap `cli.js` for
+///   `index.js` in the same `dist` directory.
+async fn resolve_pi_package_index(pi_path: &Path) -> AppResult<PathBuf> {
+    #[cfg(windows)]
+    {
+        // Prefer reading the shim next to the located command (the located
+        // `.cmd` shim and the extension-less `pi` bash shim both embed the
+        // `cli.js` path). Probe a couple of well-known shim variants.
+        let mut shim_candidates: Vec<PathBuf> = vec![pi_path.to_path_buf()];
+        if let Some(parent) = pi_path.parent() {
+            shim_candidates.push(parent.join("pi.cmd"));
+            shim_candidates.push(parent.join("pi"));
+        }
+        for shim in shim_candidates {
+            if let Ok(contents) = fs::read_to_string(&shim) {
+                if let Some(relative) = pi_dist_index_from_shim(&contents) {
+                    // npm shims reference the path via `%dp0%`/`$basedir`, i.e.
+                    // relative to the shim's own directory; absolute references
+                    // ignore the join. Anchor on the shim directory either way.
+                    let base = shim.parent().unwrap_or_else(|| Path::new(""));
+                    let index = base.join(&relative);
+                    if index.exists() {
+                        return Ok(index);
+                    }
+                    if relative.is_absolute() && relative.exists() {
+                        return Ok(relative);
+                    }
+                }
+            }
+        }
+        // Fallback: derive from the npm prefix + known package name when shim
+        // parsing fails. `...\npm\pi.cmd` -> `...\npm\node_modules\<pkg>\dist`.
+        if let Some(prefix) = pi_path.parent() {
+            let fallback = prefix
+                .join("node_modules")
+                .join("@earendil-works")
+                .join("pi-coding-agent")
+                .join("dist")
+                .join("index.js");
+            if fallback.exists() {
+                return Ok(fallback);
+            }
+            return Err(
+                AppError::new("PI_PACKAGE_NOT_FOUND", "无法定位 Pi 模块")
+                    .with_details(fallback.display().to_string()),
+            );
+        }
+        Err(AppError::new("PI_PACKAGE_NOT_FOUND", "无法定位 Pi 模块")
+            .with_details(pi_path.display().to_string()))
+    }
+    #[cfg(not(windows))]
+    {
+        pi_path
+            .parent()
+            .and_then(Path::parent)
+            .map(|package_dir| package_dir.join("dist").join("index.js"))
+            .filter(|path| path.exists())
+            .ok_or_else(|| {
+                AppError::new("PI_PACKAGE_NOT_FOUND", "无法定位 Pi 模块")
+                    .with_details(pi_path.display().to_string())
+            })
+    }
+}
+
+/// Extract `<dist>/index.js` from the contents of a Windows `pi` launcher shim.
+///
+/// The npm-generated `pi.cmd` shim runs something like:
+/// `node "%dp0%\node_modules\@earendil-works\pi-coding-agent\dist\cli.js" %*`
+/// and the extension-less bash shim embeds the same relative path. We locate the
+/// `node_modules\...\dist\cli.js` (or `.../dist/cli.js`) token and rewrite the
+/// trailing `cli.js` to `index.js`. Returns an absolute path when the shim used
+/// an absolute reference, otherwise a path relative to whatever the caller joins.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn pi_dist_index_from_shim(shim_contents: &str) -> Option<PathBuf> {
+    // Match the `dist` directory followed by `cli.js`, tolerating either slash
+    // style and an optional `%~dp0`/`%dp0%`/`$basedir` prefix the npm shim adds.
+    for token in shim_contents.split(|c: char| c == '"' || c == '\'' || c.is_whitespace()) {
+        let lower = token.to_ascii_lowercase();
+        let trimmed = lower.trim_end_matches(['\\', '/']);
+        if trimmed.ends_with("dist\\cli.js") || trimmed.ends_with("dist/cli.js") {
+            // Map back onto the original-cased token to preserve the real path.
+            let cli_path = strip_shim_prefix(token);
+            let dist_index = replace_cli_with_index(cli_path);
+            return Some(PathBuf::from(dist_index));
+        }
+    }
+    None
+}
+
+/// Drop the npm shim's relative `%~dp0`/`%dp0%`/`$basedir/` directory markers so
+/// the embedded path can be used directly when it is absolute.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn strip_shim_prefix(token: &str) -> &str {
+    let mut rest = token;
+    for prefix in ["%~dp0\\", "%~dp0/", "%dp0%\\", "%dp0%/", "$basedir/", "$basedir\\"] {
+        if let Some(stripped) = rest.strip_prefix(prefix) {
+            rest = stripped;
+        }
+    }
+    rest
+}
+
+/// Swap a trailing `cli.js` segment for `index.js`, preserving the slash style.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn replace_cli_with_index(cli_path: &str) -> String {
+    if let Some(base) = cli_path.strip_suffix("cli.js") {
+        format!("{base}index.js")
+    } else {
+        cli_path.to_string()
+    }
 }
 
 fn parse_pi_models_json(output: &str) -> AppResult<Vec<PiModelInfo>> {
@@ -3514,6 +3764,7 @@ pub fn run() {
             apply_auth_account,
             import_pi_auth_account,
             submit_oauth_manual_code,
+            cancel_oauth_login,
             login_official_provider_oauth
         ])
         .run(tauri::generate_context!())
@@ -4788,7 +5039,10 @@ mod tests {
             "oauth_test",
             Path::new("/tmp/oauth auth/manual-code.txt"),
         );
-        assert!(script.contains("\"file:///tmp/pi package/dist/index.js\""));
+        assert!(script
+            .contains("import(pathToFileURL(\"/tmp/pi package/dist/index.js\").href)"));
+        assert!(script.contains("import { pathToFileURL } from \"node:url\";"));
+        assert!(!script.contains("file://"));
         assert!(script.contains("\"/tmp/oauth auth/auth.json\""));
         assert!(script.contains("\"/tmp/oauth auth/manual-code.txt\""));
         assert!(script.contains("const providerId = \"openai-codex\";"));
@@ -4879,6 +5133,33 @@ mod tests {
         )
         .unwrap_err();
         assert_eq!(err.code, "VALIDATION_FAILED");
+    }
+
+    #[test]
+    fn cancel_oauth_login_marks_token_and_is_noop_when_missing() {
+        let sessions = OAuthLoginSessions::default();
+        // Canceling an unknown / already-finished session must be a no-op.
+        cancel_oauth_login_in_session(&sessions, "missing");
+
+        let dir = tempfile::tempdir().unwrap();
+        let manual_code_file = dir.path().join("manual-code.txt");
+        let token = {
+            let guard = OAuthLoginSessionGuard::register(
+                &sessions,
+                "oauth_cancel".to_string(),
+                manual_code_file,
+            )
+            .unwrap();
+            let token = guard.cancel.clone();
+            assert!(sessions.cancels.lock().unwrap().contains_key("oauth_cancel"));
+            assert!(!token.is_cancelled());
+            cancel_oauth_login_in_session(&sessions, "oauth_cancel");
+            assert!(token.is_cancelled());
+            token
+        };
+        // Guard drop clears both manual-code and cancel registrations.
+        assert!(!sessions.cancels.lock().unwrap().contains_key("oauth_cancel"));
+        assert!(token.is_cancelled());
     }
 
     #[test]
@@ -5229,5 +5510,105 @@ openai    o3-mini                200K     100K     yes       no
             serde_json::from_str(&fs::read_to_string(paths.pi_settings_file).unwrap()).unwrap();
         assert_eq!(settings["defaultProvider"], "Relay");
         assert_eq!(settings["defaultModel"], "deepseek chat");
+    }
+
+    #[test]
+    fn select_pi_command_prefers_windows_launcher_over_extensionless_shim() {
+        // `where pi` on Windows lists multiple matches; pick a Rust-spawnable
+        // launcher (.cmd/.bat/.exe), not the extension-less bash shim.
+        let output = "C:\\Users\\u\\AppData\\Roaming\\npm\\pi\r\nC:\\Users\\u\\AppData\\Roaming\\npm\\pi.cmd\r\nC:\\Users\\u\\AppData\\Roaming\\npm\\pi.ps1\r\n";
+        assert_eq!(
+            select_pi_command_path(output).as_deref(),
+            Some("C:\\Users\\u\\AppData\\Roaming\\npm\\pi.cmd")
+        );
+    }
+
+    #[test]
+    fn select_pi_command_falls_back_to_first_candidate() {
+        // `which pi` on Unix returns a single path with no preferred extension.
+        assert_eq!(
+            select_pi_command_path("/usr/local/bin/pi\n").as_deref(),
+            Some("/usr/local/bin/pi")
+        );
+        // Whitespace-only / empty locator output yields nothing.
+        assert_eq!(select_pi_command_path("\n  \r\n").as_deref(), None);
+        assert_eq!(select_pi_command_path("").as_deref(), None);
+    }
+
+    #[test]
+    fn pi_dist_index_from_cmd_shim_extracts_relative_node_modules_path() {
+        // Realistic npm `pi.cmd` shim referencing the package via `%dp0%`.
+        let shim = "@ECHO off\r\nGOTO start\r\n:start\r\nnode  \"%dp0%\\node_modules\\@earendil-works\\pi-coding-agent\\dist\\cli.js\" %*\r\n";
+        let index = pi_dist_index_from_shim(shim).unwrap();
+        assert_eq!(
+            index,
+            PathBuf::from(
+                "node_modules\\@earendil-works\\pi-coding-agent\\dist\\index.js"
+            )
+        );
+        // Joined onto the shim directory this reconstructs the real layout.
+        let base = Path::new("C:\\Users\\92176\\AppData\\Roaming\\npm");
+        assert_eq!(
+            base.join(&index),
+            PathBuf::from(
+                "C:\\Users\\92176\\AppData\\Roaming\\npm\\node_modules\\@earendil-works\\pi-coding-agent\\dist\\index.js"
+            )
+        );
+    }
+
+    #[test]
+    fn pi_dist_index_from_bash_shim_handles_forward_slashes_and_basedir() {
+        // Extension-less `pi` bash shim using `$basedir` and forward slashes.
+        let shim = "#!/bin/sh\nbasedir=$(dirname \"$0\")\nexec node  \"$basedir/node_modules/@earendil-works/pi-coding-agent/dist/cli.js\" \"$@\"\n";
+        assert_eq!(
+            pi_dist_index_from_shim(shim).unwrap(),
+            PathBuf::from("node_modules/@earendil-works/pi-coding-agent/dist/index.js")
+        );
+    }
+
+    #[test]
+    fn pi_dist_index_from_shim_returns_none_without_cli_token() {
+        assert_eq!(pi_dist_index_from_shim("@echo off\r\nrem nothing here\r\n"), None);
+        // A `cli.js` not inside a `dist` directory must not match.
+        assert_eq!(
+            pi_dist_index_from_shim("node \"%dp0%\\node_modules\\foo\\bin\\cli.js\" %*"),
+            None
+        );
+    }
+
+    #[test]
+    fn replace_cli_with_index_preserves_slash_style() {
+        assert_eq!(replace_cli_with_index("a\\dist\\cli.js"), "a\\dist\\index.js");
+        assert_eq!(replace_cli_with_index("a/dist/cli.js"), "a/dist/index.js");
+        // Tokens that do not end in cli.js are returned unchanged.
+        assert_eq!(replace_cli_with_index("a/dist/index.js"), "a/dist/index.js");
+    }
+
+    #[test]
+    fn strip_extended_length_prefix_normalizes_windows_canonical_paths() {
+        // `fs::canonicalize` on Windows returns a `\\?\` extended-length path;
+        // it must become a plain drive path before reaching node `pathToFileURL`.
+        assert_eq!(
+            strip_extended_length_prefix(Path::new(
+                r"\\?\C:\Users\92176\AppData\Roaming\npm\node_modules\@earendil-works\pi-coding-agent\dist\index.js"
+            )),
+            PathBuf::from(
+                r"C:\Users\92176\AppData\Roaming\npm\node_modules\@earendil-works\pi-coding-agent\dist\index.js"
+            )
+        );
+        // UNC extended-length paths collapse back to `\\server\share\...`.
+        assert_eq!(
+            strip_extended_length_prefix(Path::new(r"\\?\UNC\server\share\pkg\dist\index.js")),
+            PathBuf::from(r"\\server\share\pkg\dist\index.js")
+        );
+        // No prefix (always the Unix case) is an unchanged no-op.
+        assert_eq!(
+            strip_extended_length_prefix(Path::new("/tmp/pi package/dist/index.js")),
+            PathBuf::from("/tmp/pi package/dist/index.js")
+        );
+        assert_eq!(
+            strip_extended_length_prefix(Path::new(r"C:\plain\path\index.js")),
+            PathBuf::from(r"C:\plain\path\index.js")
+        );
     }
 }

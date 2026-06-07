@@ -63,3 +63,60 @@ await createApiKeyAccount(providerId, label, confirmedBaseUrl, confirmedApiKey);
 ```
 
 The user-confirmed endpoint and credential are stored on the account, independent of later provider edits.
+
+## Scenario: OAuth Login Flows (browser / device-code / manual-callback)
+
+### 1. Scope / Trigger
+
+- Trigger: the "Add account" OAuth tab inline state machine in `src/App.tsx`, the `oauth-login-event` listener, and the backend driver `login_official_provider_oauth` → `oauth_login_script` (runs the Pi SDK `auth.login()`).
+- OAuth is supported ONLY for `anthropic`, `github-copilot`, `openai-codex`.
+
+### 2. Signatures
+
+- Frontend: `loginOfficialProviderOAuth(providerId, label?)`, `submitOAuthManualCode(loginId, code)`, `cancelOAuthLogin(loginId)`.
+- Backend commands: `login_official_provider_oauth`, `submit_oauth_manual_code { loginId, code }`, `cancel_oauth_login { loginId }` (all `#[serde(rename_all = "camelCase")]`).
+- Event payload (`OAuthLoginEvent`, channel `oauth-login-event`): every variant carries `loginId`. Variants: `started | auth{url} | deviceCode{userCode, verificationUri, intervalSeconds?, expiresInSeconds?} | manualCode{message} | prompt | select | progress | success`.
+
+### 3. Contracts
+
+- Three real flows (verified against the installed Pi SDK):
+  - `openai-codex`, `anthropic` → **browser flow**: emits `auth{url}` AND runs a localhost callback server (codex `1455`, anthropic random port) for auto-capture, AND emits `manualCode` as a fallback.
+  - `github-copilot` → **device-code flow**: emits `prompt` (GitHub Enterprise URL; the script auto-answers `""` = github.com) then `deviceCode{userCode, verificationUri}`. It does NOT emit an `auth` url.
+- Inline UI MUST branch on event type, in priority order: `auth.url present` → link (full, copyable) + open-in-browser + manual-callback field; else `deviceCode present` → device code + verification page + open-in-browser (NO manual field; the SDK polls to completion); else "generating link".
+- Inline mode SUPPRESSES the legacy auto-`openUrl` and the global manual-code popup. The provider-card entry (`loginOAuthProvider`) keeps the legacy auto-open + popup behavior.
+- Manual callback submit: validate client-side BEFORE `submitOAuthManualCode` — input must be a URL containing `code` and `state`, and `state` must match the auth URL's `state`. Invalid input is NOT submitted (the SDK manual-code call is one-shot; submitting garbage burns the session).
+- Cancel: `cancelOAuthLogin(loginId)` kills the node subprocess; backend returns error code `OAUTH_LOGIN_CANCELED`, which the frontend treats silently (not shown as an error). Triggered by close dialog / switch provider / switch to API Key tab / cancel button.
+
+### 4. Validation & Error Matrix
+
+- Unsupported provider id → validation error ("当前官方供应商不支持 OAuth 登录").
+- Manual input not a URL / missing `code`|`state` / `state` mismatch → inline error, NOT submitted (session preserved, no restart).
+- Submitted-but-rejected code (401 / expired) → `OAUTH_LOGIN_FAILED`; the one-shot session is dead → return to idle (no auto-restart).
+- Cancel → `OAUTH_LOGIN_CANCELED` (silent).
+
+### 5. Good/Base/Bad Cases
+
+- Good (codex/anthropic): open link → authorize → localhost server auto-captures → `login` resolves → dialog closes + account applied + list refreshed.
+- Good (github-copilot): show device code → user enters it at the verification page → SDK polls → resolves.
+- Bad: an inline UI that only renders `auth.url` makes the device-code provider (github-copilot) hang on "generating link"; submitting unvalidated text burns the one-shot SDK manual-code session.
+
+### 6. Tests Required
+
+- Backend: `cancel_oauth_login` marks the session cancel token and is a no-op for unknown/finished sessions; the session guard cleanup removes both the manual-code file and the cancel registration (`cargo test --lib`).
+- Frontend: `tsc --noEmit` + `npm run build` (no frontend test framework). Event-type narrowing (`event.type === "auth" | "deviceCode"`) must precede accessing `url` / `userCode` / `verificationUri`.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```tsx
+{oauthAuthUrl ? <Link/> : <Generating/>}     // github-copilot (device-code) never renders → hangs
+submitOAuthManualCode(loginId, pastedText);   // unvalidated garbage burns the one-shot session
+```
+
+#### Correct
+
+```tsx
+{oauthAuthUrl ? <BrowserFlow/> : oauthDeviceCode ? <DeviceCodeFlow/> : <Generating/>}
+if (isValidCallback(value)) submitOAuthManualCode(loginId, value); else setInlineError();
+```

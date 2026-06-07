@@ -56,6 +56,12 @@ export async function submitOAuthManualCode(loginId: string, code: string) {
   });
 }
 
+export async function cancelOAuthLogin(loginId: string) {
+  return tauriInvoke<void>("cancel_oauth_login", {
+    input: { loginId },
+  });
+}
+
 export async function createApiKeyAccount(providerId: string, label: string, baseUrl: string, apiKey: string) {
   return tauriInvoke<AuthAccount>("create_api_key_account", {
     input: { providerId, label, baseUrl, apiKey },
