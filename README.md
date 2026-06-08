@@ -1,60 +1,26 @@
 # Pi Switch
 
-Pi Switch is a Tauri + React + TypeScript desktop configuration console for Pi Coding Agent.
+## 这是什么
 
-The MVP manages providers for official APIs and custom relay endpoints, then applies one active provider to Pi global configuration.
+Pi Switch 是一个用于切换 Pi Coding Agent 模型供应商和默认模型的桌面配置工具。
 
-## Features
+它把原本需要手动修改配置文件的流程做成了图形界面，用户可以在 OpenAI、Anthropic、Google Gemini、OpenRouter、Groq、Mistral、xAI 以及自定义中转服务之间快速切换。
 
-- Provider create, duplicate, delete and edit.
-- Official providers: OpenAI, Anthropic, Google Gemini, OpenRouter, Groq, Mistral, xAI.
-- Custom providers with name, base URL, API type, API key and model list.
-- Save GUI config to `~\PiSwitch\config.json`.
-- Apply the active provider to:
-  - `~\.pi\agent\models.json`
-  - `~\.pi\agent\auth.json`
-  - `~\.pi\agent\settings.json`
-- Preserve OAuth and unknown entries in `auth.json`.
-- Preserve unrelated fields in `settings.json`; only update `defaultProvider` and `defaultModel`.
-- Fetch OpenAI-compatible `/models` candidates for custom providers.
-- Run `pi -p "ping"` with a 15 second timeout.
-- Chinese / English UI and system / light / dark theme.
+## 怎么跑
 
-## Development
+1. clone 仓库
+2. 安装依赖：`npm install`
+3. 启动完整桌面应用：`npm run tauri dev`
+4. 只启动前端开发服务：`npm run dev`
+5. 构建发布包：`npm run tauri build`
 
-```bash
-npm install
-npm run tauri dev
-```
+## 用了什么
 
-On WSLg, WebKitGTK can fail to present the window with Mesa/Zink EGL errors while
-the taskbar icon is still visible. Pi Switch automatically enables software GL in
-WSL. If you need to run the backend manually, use:
-
-```bash
-LIBGL_ALWAYS_SOFTWARE=1 WEBKIT_DISABLE_DMABUF_RENDERER=1 cargo run --manifest-path src-tauri/Cargo.toml --no-default-features
-```
-
-## Validation
-
-```bash
-npm run build
-cd src-tauri
-cargo test
-cd ..
-npm run tauri build
-```
-
-Release bundles are generated under:
-
-```text
-src-tauri/target/release/bundle/
-```
-
-## Specs
-
-- Product requirements: `docs/specs/pi-switch-prd.md`
-- Technical design: `docs/specs/technical-design.md`
-- UI flow: `docs/specs/ui-flow.md`
-- Wireframes: `docs/specs/wireframes.md`
-- Original static prototype: `prototypes/ui/index.html`
+- Tauri + React + TypeScript
+- Rust 后端
+- 主要功能：
+  - 管理多个模型供应商和模型列表
+  - 支持官方 API 和自定义 OpenAI-compatible 接口
+  - 保存应用配置到 `~\PiSwitch\config.json`
+  - 将当前启用的供应商写入 Pi Coding Agent 的全局配置
+  - 保留已有 OAuth、未知字段和其他配置项，避免覆盖用户原有设置
