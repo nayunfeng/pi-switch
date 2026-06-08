@@ -905,9 +905,7 @@ function App() {
       <header className="topbar">
         <div className="brand">
           <div className="brand-mark" aria-hidden="true">
-            <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round">
-              <path d="M6 4v16M6 9h6a3 3 0 0 0 0-6H6M14 9v11" />
-            </svg>
+            <span className="brand-pi">Π</span>
           </div>
           <div className="brand-text">
             <span className="brand-name">{t("title")}</span>

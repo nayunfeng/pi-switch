@@ -814,6 +814,17 @@ button {
   flex: 0 0 auto;
 }
 
+.brand-pi {
+  display: block;
+  color: #fff;
+  font-family: "DM Sans", "Segoe UI", system-ui, sans-serif;
+  font-size: 23px;
+  font-style: italic;
+  font-weight: 680;
+  line-height: 1;
+  transform: translateY(-1px) skewX(-7deg);
+}
+
 .brand-text {
   display: flex;
   flex-direction: column;
