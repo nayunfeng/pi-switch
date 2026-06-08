@@ -546,3 +546,36 @@ No `.trellis/spec` update needed: this was a frontend-only interaction cleanup w
 ### Next Steps
 
 - None - task complete
+
+
+## Session 16: 更新应用图标
+
+**Date**: 2026-06-08
+**Task**: 更新应用图标
+**Branch**: `master`
+
+### Summary
+
+落地橙色手写 Π 应用图标，替换 Tauri 图标资源，并同步 GUI 顶部品牌标识。
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `64dce9b` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
